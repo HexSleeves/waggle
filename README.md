@@ -160,7 +160,9 @@ Wrap coding agent CLIs behind a uniform interface:
 |---------|-----|---------|
 | `claude-code` | Claude Code | `claude -p "<prompt>"` |
 | `codex` | Codex | `codex exec "<prompt>"` |
-| `opencode` | OpenCode | `opencode "<prompt>"` |
+| `opencode` | OpenCode | `opencode run "<prompt>"` |
+| `kimi` | Kimi Code | `kimi --print --final-message-only -p "<prompt>"` |
+| `gemini` | Gemini CLI | `echo "<prompt>" \| gemini` |
 | `exec` | Shell (bash) | `bash -c "<description>"` |
 | `shelley` | Shelley | `shelley -p "<prompt>"` |
 

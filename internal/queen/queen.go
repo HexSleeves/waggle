@@ -112,6 +112,20 @@ func New(cfg *config.Config, logger *log.Logger) (*Queen, error) {
 	// Register exec adapter (always available fallback)
 	registry.Register(adapter.NewExecAdapter(cfg.ProjectDir))
 
+	// Register kimi adapter
+	registry.Register(adapter.NewKimiAdapter(
+		cfg.Adapters["kimi"].Command,
+		cfg.Adapters["kimi"].Args,
+		cfg.ProjectDir,
+	))
+
+	// Register gemini adapter
+	registry.Register(adapter.NewGeminiAdapter(
+		cfg.Adapters["gemini"].Command,
+		cfg.Adapters["gemini"].Args,
+		cfg.ProjectDir,
+	))
+
 	// Register shelley adapter if configured
 	if _, ok := cfg.Adapters["shelley"]; ok {
 		registry.Register(adapter.NewShelleyAdapter(
@@ -440,6 +454,7 @@ func (q *Queen) monitor(ctx context.Context) error {
 	pollInterval := 2 * time.Second
 	timeout := q.cfg.Workers.DefaultTimeout
 	deadline := time.Now().Add(timeout)
+	pollCount := 0
 
 	for {
 		select {
@@ -460,10 +475,10 @@ func (q *Queen) monitor(ctx context.Context) error {
 			return nil
 		}
 
-		for _, bee := range active {
-			status := bee.Monitor()
-			q.logger.Printf("  [%s] status: %s", bee.ID(), status)
+		if pollCount%5 == 0 { // Log every 10s instead of every 2s
+			q.logger.Printf("  ⏳ %d workers active...", len(active))
 		}
+		pollCount++
 
 		time.Sleep(pollInterval)
 	}
@@ -680,16 +695,7 @@ func (q *Queen) parsePlanOutput(output string) ([]*task.Task, error) {
 
 	jsonStr := output[start : end+1]
 
-	var rawTasks []struct {
-		ID          string   `json:"id"`
-		Type        string   `json:"type"`
-		Title       string   `json:"title"`
-		Description string   `json:"description"`
-		Priority    int      `json:"priority"`
-		DependsOn   []string `json:"depends_on"`
-		MaxRetries  int      `json:"max_retries"`
-	}
-
+	var rawTasks []map[string]interface{}
 	if err := json.Unmarshal([]byte(jsonStr), &rawTasks); err != nil {
 		return nil, fmt.Errorf("parse JSON tasks: %w", err)
 	}
@@ -697,16 +703,19 @@ func (q *Queen) parsePlanOutput(output string) ([]*task.Task, error) {
 	tasks := make([]*task.Task, 0, len(rawTasks))
 	for _, rt := range rawTasks {
 		t := &task.Task{
-			ID:          rt.ID,
-			Type:        task.Type(rt.Type),
+			ID:          jsonStr_s(rt, "id"),
+			Type:        task.Type(jsonStr_s(rt, "type")),
 			Status:      task.StatusPending,
-			Priority:    task.Priority(rt.Priority),
-			Title:       rt.Title,
-			Description: rt.Description,
-			DependsOn:   rt.DependsOn,
-			MaxRetries:  rt.MaxRetries,
+			Priority:    task.Priority(jsonInt(rt, "priority")),
+			Title:       jsonStr_s(rt, "title"),
+			Description: jsonStr_s(rt, "description"),
+			DependsOn:   jsonStrSlice(rt, "depends_on"),
+			MaxRetries:  jsonInt(rt, "max_retries"),
 			CreatedAt:   time.Now(),
 			Timeout:     q.cfg.Workers.DefaultTimeout,
+		}
+		if t.ID == "" {
+			t.ID = fmt.Sprintf("task-%d", time.Now().UnixNano())
 		}
 		if t.MaxRetries == 0 {
 			t.MaxRetries = q.cfg.Workers.MaxRetries
@@ -876,6 +885,70 @@ func (q *Queen) printReport() {
 	fmt.Printf("  Session: %s\n", q.sessionID)
 	fmt.Printf("  Log: .hive/hive.db\n")
 	fmt.Println("")
+}
+
+// --- JSON parsing helpers (tolerant of LLM output variations) ---
+
+func jsonStr_s(m map[string]interface{}, key string) string {
+	v, ok := m[key]
+	if !ok {
+		return ""
+	}
+	switch val := v.(type) {
+	case string:
+		return val
+	case float64:
+		return fmt.Sprintf("%v", val)
+	default:
+		return fmt.Sprintf("%v", val)
+	}
+}
+
+func jsonInt(m map[string]interface{}, key string) int {
+	v, ok := m[key]
+	if !ok {
+		return 0
+	}
+	switch val := v.(type) {
+	case float64:
+		return int(val)
+	case string:
+		// Handle "high", "medium", "low" or numeric strings
+		switch strings.ToLower(val) {
+		case "critical":
+			return 3
+		case "high":
+			return 2
+		case "medium", "normal":
+			return 1
+		case "low":
+			return 0
+		default:
+			var n int
+			fmt.Sscanf(val, "%d", &n)
+			return n
+		}
+	default:
+		return 0
+	}
+}
+
+func jsonStrSlice(m map[string]interface{}, key string) []string {
+	v, ok := m[key]
+	if !ok || v == nil {
+		return nil
+	}
+	arr, ok := v.([]interface{})
+	if !ok {
+		return nil
+	}
+	result := make([]string, 0, len(arr))
+	for _, item := range arr {
+		if s, ok := item.(string); ok {
+			result = append(result, s)
+		}
+	}
+	return result
 }
 
 func truncate(s string, max int) string {

@@ -86,6 +86,14 @@ func DefaultConfig() *Config {
 			},
 			"opencode": {
 				Command: "opencode",
+				Args:    []string{"run"},
+			},
+			"kimi": {
+				Command: "kimi",
+				Args:    []string{"--print", "--final-message-only", "-p"},
+			},
+			"gemini": {
+				Command: "gemini",
 			},
 			"shelley": {
 				Command: "shelley",
