@@ -15,6 +15,8 @@ import (
 	"github.com/exedev/queen-bee/internal/bus"
 	"github.com/exedev/queen-bee/internal/compact"
 	"github.com/exedev/queen-bee/internal/config"
+	"github.com/exedev/queen-bee/internal/errors"
+	"github.com/exedev/queen-bee/internal/safety"
 	"github.com/exedev/queen-bee/internal/state"
 	"github.com/exedev/queen-bee/internal/task"
 	"github.com/exedev/queen-bee/internal/worker"
@@ -64,6 +66,121 @@ func (q *Queen) SetTasks(tasks []*task.Task) {
 	q.pendingTasks = tasks
 }
 
+// ResumeSession loads a previous session's tasks from the database.
+// It restores the task graph with all statuses, and prepares the queen
+// to continue execution from the appropriate phase.
+// Returns the objective and any error encountered.
+func (q *Queen) ResumeSession(sessionID string) (string, error) {
+	// Get session info including phase and iteration
+	sessionInfo, err := q.db.GetSessionFull(sessionID)
+	if err != nil {
+		return "", fmt.Errorf("get session info: %w", err)
+	}
+
+	q.sessionID = sessionID
+	q.objective = sessionInfo.Objective
+
+	// Restore phase and iteration if available
+	if sessionInfo.Phase != "" {
+		q.phase = Phase(sessionInfo.Phase)
+	}
+	if sessionInfo.Iteration > 0 {
+		q.iteration = sessionInfo.Iteration
+	}
+
+	// Reset any 'running' tasks to 'pending' since workers are gone
+	if err := q.db.ResetRunningTasks(sessionID); err != nil {
+		q.logger.Printf("⚠ Warning: failed to reset running tasks: %v", err)
+	}
+
+	// Load all tasks from the session
+	taskRows, err := q.db.GetTasks(sessionID)
+	if err != nil {
+		return "", fmt.Errorf("load tasks: %w", err)
+	}
+
+	// Convert TaskRows to Tasks and add to task graph
+	for _, tr := range taskRows {
+		t := taskFromRow(&tr)
+		q.tasks.Add(t)
+		q.logger.Printf("  📋 Restored task: [%s] %s (%s)", t.Type, t.Title, t.Status)
+	}
+
+	q.logger.Printf("🔄 Resumed session %s with %d tasks", sessionID, len(taskRows))
+	q.logger.Printf("   Objective: %s", q.objective)
+	q.logger.Printf("   Phase: %s | Iteration: %d", q.phase, q.iteration)
+
+	return q.objective, nil
+}
+
+// taskFromRow converts a state.TaskRow to a task.Task
+func taskFromRow(tr *state.TaskRow) *task.Task {
+	// Parse depends_on from comma-separated string
+	var dependsOn []string
+	if tr.DependsOn != "" {
+		dependsOn = strings.Split(tr.DependsOn, ",")
+	}
+
+	t := &task.Task{
+		ID:          tr.ID,
+		Type:        task.Type(tr.Type),
+		Status:      task.Status(tr.Status),
+		Priority:    task.Priority(tr.Priority),
+		Title:       tr.Title,
+		Description: tr.Description,
+		MaxRetries:  tr.MaxRetries,
+		RetryCount:  tr.RetryCount,
+		DependsOn:   dependsOn,
+	}
+
+	if tr.WorkerID != nil {
+		t.WorkerID = *tr.WorkerID
+	}
+
+	// Parse timestamps if present
+	if tr.CreatedAt != "" {
+		if ts, err := time.Parse(time.RFC3339Nano, tr.CreatedAt); err == nil {
+			t.CreatedAt = ts
+		} else {
+			t.CreatedAt = time.Now()
+		}
+	} else {
+		t.CreatedAt = time.Now()
+	}
+
+	if tr.StartedAt != nil && *tr.StartedAt != "" {
+		if ts, err := time.Parse(time.RFC3339Nano, *tr.StartedAt); err == nil {
+			t.StartedAt = &ts
+		}
+	}
+
+	if tr.CompletedAt != nil && *tr.CompletedAt != "" {
+		if ts, err := time.Parse(time.RFC3339Nano, *tr.CompletedAt); err == nil {
+			t.CompletedAt = &ts
+		}
+	}
+
+	// Parse result if present
+	if tr.Result != nil && *tr.Result != "" {
+		var result task.Result
+		if err := json.Unmarshal([]byte(*tr.Result), &result); err == nil {
+			t.Result = &result
+		}
+	}
+
+	// Restore last_error_type from result_data if present
+	if tr.ResultData != nil && *tr.ResultData != "" {
+		var data map[string]interface{}
+		if err := json.Unmarshal([]byte(*tr.ResultData), &data); err == nil {
+			if et, ok := data["last_error_type"].(string); ok {
+				t.LastErrorType = et
+			}
+		}
+	}
+
+	return t
+}
+
 // New creates a new Queen orchestrator
 func New(cfg *config.Config, logger *log.Logger) (*Queen, error) {
 	if logger == nil {
@@ -91,32 +208,42 @@ func New(cfg *config.Config, logger *log.Logger) (*Queen, error) {
 	// Initialize task graph
 	tasks := task.NewTaskGraph(msgBus)
 
+	// Initialize safety guard
+	guard, err := safety.NewGuard(cfg.Safety, cfg.ProjectDir)
+	if err != nil {
+		return nil, fmt.Errorf("init safety guard: %w", err)
+	}
+
 	// Initialize adapter registry
 	registry := adapter.NewRegistry()
 	registry.Register(adapter.NewClaudeAdapter(
 		cfg.Adapters["claude-code"].Command,
 		cfg.Adapters["claude-code"].Args,
 		cfg.ProjectDir,
+		guard,
 	))
 	registry.Register(adapter.NewCodexAdapter(
 		cfg.Adapters["codex"].Command,
 		cfg.Adapters["codex"].Args,
 		cfg.ProjectDir,
+		guard,
 	))
 	registry.Register(adapter.NewOpenCodeAdapter(
 		cfg.Adapters["opencode"].Command,
 		cfg.Adapters["opencode"].Args,
 		cfg.ProjectDir,
+		guard,
 	))
 
 	// Register exec adapter (always available fallback)
-	registry.Register(adapter.NewExecAdapter(cfg.ProjectDir))
+	registry.Register(adapter.NewExecAdapter(cfg.ProjectDir, guard))
 
 	// Register kimi adapter
 	registry.Register(adapter.NewKimiAdapter(
 		cfg.Adapters["kimi"].Command,
 		cfg.Adapters["kimi"].Args,
 		cfg.ProjectDir,
+		guard,
 	))
 
 	// Register gemini adapter
@@ -124,6 +251,7 @@ func New(cfg *config.Config, logger *log.Logger) (*Queen, error) {
 		cfg.Adapters["gemini"].Command,
 		cfg.Adapters["gemini"].Args,
 		cfg.ProjectDir,
+		guard,
 	))
 
 	// Register shelley adapter if configured
@@ -227,31 +355,38 @@ func (q *Queen) Run(ctx context.Context, objective string) error {
 				q.logger.Printf("❌ Plan failed: %v", err)
 				q.lastErr = err
 				q.phase = PhaseFailed
+				q.savePhase()
 				continue
 			}
 			q.phase = PhaseDelegate
+			q.savePhase()
 
 		case PhaseDelegate:
 			if err := q.delegate(ctx); err != nil {
 				q.logger.Printf("❌ Delegate failed: %v", err)
 				q.phase = PhaseFailed
+				q.savePhase()
 				continue
 			}
 			q.phase = PhaseMonitor
+			q.savePhase()
 
 		case PhaseMonitor:
 			if err := q.monitor(ctx); err != nil {
 				q.logger.Printf("❌ Monitor failed: %v", err)
 				q.phase = PhaseFailed
+				q.savePhase()
 				continue
 			}
 			q.phase = PhaseReview
+			q.savePhase()
 
 		case PhaseReview:
 			done, err := q.review(ctx)
 			if err != nil {
 				q.logger.Printf("❌ Review failed: %v", err)
 				q.phase = PhaseFailed
+				q.savePhase()
 				continue
 			}
 			if done {
@@ -259,6 +394,7 @@ func (q *Queen) Run(ctx context.Context, objective string) error {
 			} else {
 				q.phase = PhasePlan // Loop back for more work
 			}
+			q.savePhase()
 
 		case PhaseDone:
 			q.logger.Println("✅ All tasks complete!")
@@ -579,7 +715,7 @@ func (q *Queen) review(ctx context.Context) (bool, error) {
 	return false, nil
 }
 
-// handleTaskFailure manages retry logic for failed tasks
+// handleTaskFailure manages retry logic for failed tasks with error classification
 func (q *Queen) handleTaskFailure(ctx context.Context, taskID, workerID string, result *task.Result) {
 	t, ok := q.tasks.Get(taskID)
 	if !ok {
@@ -591,25 +727,68 @@ func (q *Queen) handleTaskFailure(ctx context.Context, taskID, workerID string, 
 		errMsg = strings.Join(result.Errors, "; ")
 	}
 
-	q.logger.Printf("  ❌ Task %s failed: %s", taskID, truncate(errMsg, 200))
+	// Classify the error type
+	errType := errors.ClassifyError(fmt.Errorf("%s", errMsg))
+	t.LastError = errMsg
+	t.LastErrorType = string(errType)
 
-	if t.RetryCount < t.MaxRetries {
+	// Update error type in database
+	if err := q.db.UpdateTaskErrorType(q.sessionID, taskID, t.LastErrorType); err != nil {
+		q.logger.Printf("  ⚠ Warning: failed to update task error type: %v", err)
+	}
+
+	q.logger.Printf("  ❌ Task %s failed (%s): %s", taskID, errType, truncate(errMsg, 200))
+
+	// Check if error is retryable
+	isRetryable := errors.IsRetryable(fmt.Errorf("%s", errMsg))
+
+	// Don't increment retry count for permanent errors - they won't succeed on retry
+	if isRetryable && t.RetryCount < t.MaxRetries {
 		t.RetryCount++
+
+		// Calculate exponential backoff delay
+		baseDelay := 2 * time.Second
+		maxDelay := 60 * time.Second
+		backoffDelay := errors.CalculateBackoff(baseDelay, t.RetryCount-1, maxDelay)
+
 		q.tasks.UpdateStatus(taskID, task.StatusPending)
 		q.db.UpdateTaskStatus(q.sessionID, taskID, "pending")
-		q.logger.Printf("  🔄 Retrying task %s (attempt %d/%d)", taskID, t.RetryCount, t.MaxRetries)
+		q.db.UpdateTaskRetryCount(q.sessionID, taskID, t.RetryCount)
 
-		q.store.Append("queen.retry", map[string]interface{}{
-			"task_id":     taskID,
-			"retry_count": t.RetryCount,
-			"error":       errMsg,
-		})
-	} else {
+		q.logger.Printf("  🔄 Retrying task %s (attempt %d/%d) after %v backoff", taskID, t.RetryCount, t.MaxRetries, backoffDelay)
+
+		// Apply backoff by waiting before the task becomes ready again
+		// We track when the task can be retried
+		go func() {
+			time.Sleep(backoffDelay)
+			q.store.Append("queen.retry", map[string]interface{}{
+				"task_id":      taskID,
+				"retry_count":  t.RetryCount,
+				"error":        errMsg,
+				"error_type":   string(errType),
+				"backoff_ms":   backoffDelay.Milliseconds(),
+			})
+		}()
+	} else if !isRetryable {
+		// Permanent error - fail immediately without wasting retries
+		q.logger.Printf("  💀 Task %s has permanent error, failing immediately", taskID)
 		q.tasks.UpdateStatus(taskID, task.StatusFailed)
 		q.db.UpdateTaskStatus(q.sessionID, taskID, "failed")
 		q.store.Append("queen.task_failed", map[string]interface{}{
-			"task_id": taskID,
-			"error":   errMsg,
+			"task_id":     taskID,
+			"error":       errMsg,
+			"error_type":  string(errType),
+			"permanent":   true,
+		})
+	} else {
+		// Max retries exceeded
+		q.tasks.UpdateStatus(taskID, task.StatusFailed)
+		q.db.UpdateTaskStatus(q.sessionID, taskID, "failed")
+		q.store.Append("queen.task_failed", map[string]interface{}{
+			"task_id":     taskID,
+			"error":       errMsg,
+			"error_type":  string(errType),
+			"max_retries": true,
 		})
 	}
 }
@@ -774,10 +953,21 @@ func (q *Queen) Results() []TaskResult {
 	return results
 }
 
+// savePhase saves the current phase and iteration to the database for resumption.
+func (q *Queen) savePhase() {
+	if q.sessionID != "" {
+		if err := q.db.UpdateSessionPhase(q.sessionID, string(q.phase), q.iteration); err != nil {
+			q.logger.Printf("⚠ Warning: failed to save session phase: %v", err)
+		}
+	}
+}
+
 // Close cleans up resources
 func (q *Queen) Close() error {
 	q.pool.KillAll()
 	if q.sessionID != "" {
+		// Save current phase for potential resumption
+		q.savePhase()
 		q.db.UpdateSessionStatus(q.sessionID, "stopped")
 	}
 	q.db.Close()
