@@ -1,0 +1,13 @@
+# Binary
+/queen-bee
+
+# Hive state (per-project)
+.hive/
+
+# Config with secrets
+queen.json
+
+# Go
+*.exe
+*.test
+*.out
