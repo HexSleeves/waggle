@@ -1,8 +1,10 @@
 # Queen Bee — TODO
 
-> Prioritized next steps. Findings sourced from Kimi workers' own review of this codebase.
+> Prioritized next steps. Updated 2026-02-13.
 
 ## P0 — Critical (data loss / correctness)
+
+- [x] **Fix session status: "stopped" vs "done"** — `Close()` now reads current status before overwriting. Terminal states ('done', 'failed') are preserved. 3 unit tests added. *(done 2026-02-13)*
 
 - [ ] **Add fsync to JSONL event append** — `state.go` writes events without `Sync()`. OS crash loses buffered data. Either add `logFile.Sync()` after each write, or remove the JSONL store entirely now that SQLite handles persistence.
 
@@ -10,23 +12,23 @@
 
 - [ ] **Add context.Context to all DB methods** — Currently none of the `DB` methods accept a context, so queries can't be cancelled during shutdown. Change signatures to `GetSession(ctx, id)`, `AppendEvent(ctx, ...)`, etc.
 
-- [ ] **Fix session status: "stopped" vs "done"** — `Close()` always sets status to "stopped" even after a successful run that already set "done". The `Close()` call overwrites it. Guard with `if currentStatus != "done"`.
-
 ## P1 — High (reliability / usability)
 
-- [ ] **Enforce safety guard in worker execution** — `internal/safety` is fully implemented but never called. Wire `Guard.CheckPath()` and `Guard.CheckCommand()` into the adapter spawn path so workers are actually sandboxed.
+- [x] **Enforce safety guard in worker execution** — `Guard` is now wired into all 7 adapter constructors. `ValidateTaskPaths()` and `CheckCommand()` are called before spawn. All adapter goroutines have `defer/recover`. *(done 2026-02-13)*
 
-- [ ] **Recover from handler panics in message bus** — `bus.go` calls handlers directly. A panicking handler crashes the entire bus and all subscribers. Add `defer recover()` in the handler dispatch loop.
+- [x] **Recover from handler panics in message bus** — `Publish()` now wraps each handler call with `defer/recover`. Panicking handlers are logged and don't affect other subscribers. 5 tests (11 subtests) added. *(done 2026-02-13)*
 
 - [ ] **Remove or deprecate JSONL store** — SQLite is now the source of truth. The JSONL store writes in parallel but nothing reads it (status command uses DB first). Remove it to reduce write amplification and complexity.
 
-- [ ] **Implement real session resume** — `queen-bee resume` currently just re-runs with a placeholder objective. Load the actual task graph from SQLite, skip completed tasks, resume from where it left off.
+- [ ] **Fix pre-existing test failures** — Two tests fail: `TestErrorClassification/PanicError` (expects retry on panic, queen marks failed) and `TestQueenRunWithResumedSession` (DB session lookup mismatch). Need to fix the tests or the underlying logic.
+
+- [ ] **Implement real session resume** — `queen-bee resume` CLI now loads the task graph from SQLite, but the DB helpers (`ResetRunningTasks`, `GetSessionPhase`, `FindResumableSession`) need end-to-end testing. Verify interrupted sessions actually resume correctly.
 
 - [ ] **Add `--quiet` / `--json` output modes** — The monitoring logs are noisy for CI/scripting. Add a quiet mode that only shows completions, and a JSON mode for machine consumption.
 
 ## P2 — Medium (quality / testing)
 
-- [ ] **Add unit tests for queen package** — 0% coverage on the core orchestrator. Mock the adapter registry and test the Plan→Delegate→Monitor→Review loop with a mock Bee that returns canned results.
+- [ ] **Add unit tests for queen package** — Only Close() tests exist. Mock the adapter registry and test the Plan→Delegate→Monitor→Review loop with a mock Bee that returns canned results.
 
 - [ ] **Add unit tests for config, safety, compact** — All three have 0% test coverage. These are pure logic modules that are easy to test.
 
@@ -60,7 +62,7 @@
 
 - [ ] **Add `--dry-run` flag** — Run planning only, show the task graph, don't execute. Useful for previewing what the Queen will do.
 
-- [ ] **Reduce adapter boilerplate** — All 7 adapters are ~140 lines of nearly identical code. Extract a `GenericCLIAdapter` base that handles spawn/monitor/kill/output, with adapters only defining command + args + path resolution.
+- [ ] **Reduce adapter boilerplate** — All 7 adapters are ~180 lines of nearly identical code (safety checks, panic recovery, error classification). Extract a `GenericCLIAdapter` base that handles spawn/monitor/kill/output, with adapters only defining command + args + path resolution.
 
 ## Architectural Debt
 
@@ -68,3 +70,4 @@
 - The `queen.Config.Model` and `queen.Config.Provider` fields are set but never used — the Queen has no direct LLM integration, it delegates everything through adapters.
 - The `compact.Context` is wired into the Queen but the Queen never reads from it for decision-making. It's write-only currently.
 - The blackboard is both in-memory (`internal/blackboard`) and persisted (SQLite `blackboard` table). The in-memory version is authoritative during a run, the DB is write-through. On resume, the in-memory blackboard starts empty.
+- The JSONL store is fully redundant with SQLite and should be removed.

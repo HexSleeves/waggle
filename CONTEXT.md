@@ -1,6 +1,6 @@
 # Queen Bee — Project Context
 
-> Last updated: 2026-02-12
+> Last updated: 2026-02-13
 
 ## What This Is
 
@@ -16,7 +16,7 @@ User Objective
    ┌───▼───┐
    │ Queen │  Plan → Delegate → Monitor → Review → (loop or done)
    └───┬───┘
-       │ spawns via adapters
+       │ spawns via adapters (with safety guard + scope constraints)
    ┌───┴────────────┬──────────────┐
    ▼                ▼              ▼
 ┌──────┐      ┌──────┐      ┌──────┐
@@ -37,22 +37,22 @@ User Objective
 
 | Package | File(s) | Lines | Purpose |
 |---------|---------|-------|---------|
-| `cmd/queen-bee` | `main.go` | ~350 | CLI entry point: `run`, `init`, `status`, `config`, `resume` |
-| `internal/queen` | `queen.go` | ~850 | **Core orchestrator** — Plan/Delegate/Monitor/Review loop |
+| `cmd/queen-bee` | `main.go` | ~430 | CLI entry point: `run`, `init`, `status`, `config`, `resume` |
+| `internal/queen` | `queen.go` | ~1190 | **Core orchestrator** — Plan/Delegate/Monitor/Review loop |
 | `internal/worker` | `worker.go` | ~150 | `Bee` interface + concurrent `Pool` with limits |
-| `internal/adapter` | 7 adapters | ~1100 | CLI wrappers: claude, codex, opencode, kimi, gemini, exec, shelley |
+| `internal/adapter` | 7 adapters + utils | ~3400 | CLI wrappers: claude, codex, opencode, kimi, gemini, exec, shelley |
 | `internal/adapter` | `adapter.go` | ~100 | `Registry` + `TaskRouter` (maps task types → adapters) |
-| `internal/bus` | `bus.go` | ~95 | In-process pub/sub message bus with history |
-| `internal/blackboard` | `blackboard.go` | ~160 | Shared memory — workers post results, Queen reads |
-| `internal/state` | `db.go` | ~420 | **SQLite persistence** — sessions, events, tasks, blackboard, kv |
+| `internal/bus` | `bus.go` | ~110 | In-process pub/sub message bus with panic-safe handler dispatch |
+| `internal/blackboard` | `blackboard.go` | ~165 | Shared memory — workers post results, Queen reads (deep-copy on History) |
+| `internal/state` | `db.go` | ~510 | **SQLite persistence** — sessions, events, tasks, blackboard, kv |
 | `internal/state` | `state.go` | ~180 | Legacy JSONL append-only event log (still writes in parallel) |
-| `internal/task` | `task.go` | ~190 | Task graph with dependency tracking, priority, status |
+| `internal/task` | `task.go` | ~195 | Task graph with dependency tracking, priority, status, constraints |
 | `internal/config` | `config.go` | ~140 | Configuration with defaults, JSON serialization |
-| `internal/safety` | `safety.go` | ~110 | Path allowlisting, command blocklisting (wired but NOT enforced) |
+| `internal/safety` | `safety.go` | ~110 | Path allowlisting, command blocklisting — **enforced in all adapters** |
 | `internal/compact` | `compact.go` | ~135 | Context window management, token estimation, summarization |
-| `internal/errors` | `errors.go` | ~330 | Error classification, retry/permanent types, backoff (created by opencode workers) |
+| `internal/errors` | `errors.go` | ~330 | Error classification, retry/permanent types, backoff |
 
-**Total: ~5200+ lines across 22 Go source files + ~2500 lines of tests**
+**Total: ~5400 lines of source across 24 Go files + ~6600 lines of tests**
 
 ## Key Interfaces
 
@@ -78,6 +78,22 @@ type Adapter interface {
 }
 ```
 
+## Scope Constraints System
+
+Three layers control what workers can and cannot do:
+
+1. **Plan prompt** — The Queen instructs the planner to produce narrowly-scoped tasks with `constraints` (what NOT to do) and `allowed_paths` (what files may be touched).
+2. **Default constraints** — Every task gets baseline rules injected at delegation: no out-of-scope changes, no unsolicited refactoring, no signature changes, report issues don't fix them.
+3. **Worker prompt** — `buildPrompt()` renders a `--- SCOPE CONSTRAINTS ---` block visible to every worker, combining planner-generated and default constraints.
+
+## Safety Guard
+
+The `safety.Guard` is wired into all adapter constructors and enforced at spawn time:
+- `ValidateTaskPaths()` — checks task's allowed_paths against the guard's allowlist
+- `CheckCommand()` — scans task description/script for blocked commands
+- `IsReadOnly()` — prepends read-only warning to worker prompts when enabled
+- All adapter goroutines have `defer/recover` for panic safety
+
 ## Adapters — Current State
 
 | Adapter | CLI | Non-interactive Command | Status |
@@ -93,10 +109,10 @@ type Adapter interface {
 ## Data Flow
 
 1. **User** runs `queen-bee --adapter kimi run "Review this codebase"`
-2. **Queen.plan()** — Spawns one worker to decompose objective into JSON task array
-3. **Queen.delegate()** — Assigns ready tasks (respecting deps) to workers up to `MaxParallel`
+2. **Queen.plan()** — Spawns one worker to decompose objective into JSON task array (with constraints + allowed_paths per task)
+3. **Queen.delegate()** — Assigns ready tasks (respecting deps) to workers up to `MaxParallel`, injects default scope constraints
 4. **Queen.monitor()** — Polls workers every 2s, logs every 10s, enforces timeout
-5. **Queen.review()** — Collects results, posts to blackboard + DB, handles failures/retries
+5. **Queen.review()** — Collects results, posts to blackboard + DB, handles failures/retries with error classification
 6. Loop back to plan (picks up remaining tasks) or finish
 7. **printReport()** — Dumps all task outputs as a final report
 
@@ -109,9 +125,9 @@ type Adapter interface {
 ```
 
 ### SQLite Schema
-- **sessions** — one row per `queen-bee run` invocation (id, objective, status, timestamps)
+- **sessions** — one row per `queen-bee run` invocation (id, objective, status, phase, iteration, timestamps)
 - **events** — append-only event log indexed by session + type
-- **tasks** — full task state (status, worker_id, result JSON, retries, deps)
+- **tasks** — full task state (status, worker_id, result JSON, result_data, retries, deps)
 - **blackboard** — persisted shared memory (key/value per session)
 - **kv** — general purpose key-value store
 
@@ -125,7 +141,7 @@ queen-bee --adapter exec --tasks f.json run "<obj>"  # Pre-defined tasks
 queen-bee --workers 8 run "<obj>"        # Set parallelism
 queen-bee status                         # Show current/last session
 queen-bee config                         # Show configuration
-queen-bee resume                         # Resume interrupted session
+queen-bee resume                         # Resume interrupted session (loads task graph from DB)
 ```
 
 ## Configuration (`queen.json`)
@@ -170,13 +186,19 @@ queen-bee resume                         # Resume interrupted session
 6. **Status command** — SQLite-backed with JSONL fallback for legacy sessions ✅
 7. **Real-time output** — worker findings printed as they complete ✅
 8. **Final report** — complete consolidated report at end of run ✅
+9. **Scope constraints** — kimi workers stayed in `internal/bus/` (1 file) vs. 19 files without constraints ✅
+10. **Session status preservation** — Close() preserves 'done'/'failed' status, 3 unit tests ✅
+11. **Bus panic recovery** — panicking handlers caught, other handlers still execute, 5 tests ✅
+
+## Known Test Failures
+
+- `TestErrorClassification/PanicError` — expects retry on panic but queen marks as failed (pre-existing)
+- `TestQueenRunWithResumedSession` — resume test has DB session lookup mismatch (pre-existing)
 
 ## What Was NOT Built Yet
 
-- No unit tests for queen, config, safety, compact modules
-- Safety guard is defined but never enforced in worker execution
+- No unit tests for config, safety, compact modules
 - Context compaction exists but the LLM-backed summarizer is a stub
-- Session resume reads state but doesn't actually restore the task graph
 - The Queen's "model" config (anthropic/claude) is unused — planning uses the worker adapter
 - No CI/CD, no Makefile, no release process
 - The JSONL store is redundant now that SQLite exists
@@ -189,5 +211,5 @@ queen-bee resume                         # Resume interrupted session
 ## Repository
 
 - GitHub: https://github.com/HexSleeves/queen-bee
-- 6 commits on `main`
+- 8 commits on `main`
 - No branches, no CI, no releases
