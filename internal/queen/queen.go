@@ -16,6 +16,7 @@ import (
 	"github.com/exedev/queen-bee/internal/compact"
 	"github.com/exedev/queen-bee/internal/config"
 	"github.com/exedev/queen-bee/internal/errors"
+	"github.com/exedev/queen-bee/internal/llm"
 	"github.com/exedev/queen-bee/internal/safety"
 	"github.com/exedev/queen-bee/internal/state"
 	"github.com/exedev/queen-bee/internal/task"
@@ -55,6 +56,8 @@ type Queen struct {
 	iteration int
 	logger    *log.Logger
 	lastErr   error
+
+	llm *llm.Client // LLM client for AI-backed review/replan
 
 	// For tracking worker->task assignments
 	assignments  map[string]string // workerID -> taskID
