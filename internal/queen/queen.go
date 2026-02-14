@@ -254,16 +254,6 @@ func New(cfg *config.Config, logger *log.Logger) (*Queen, error) {
 		guard,
 	))
 
-	// Register shelley adapter if configured
-	if _, ok := cfg.Adapters["shelley"]; ok {
-		registry.Register(adapter.NewShelleyAdapter(
-			cfg.Adapters["shelley"].Command,
-			cfg.Adapters["shelley"].Args,
-			cfg.ProjectDir,
-			guard,
-		))
-	}
-
 	router := adapter.NewTaskRouter(registry)
 
 	// Initialize worker pool
@@ -771,11 +761,11 @@ func (q *Queen) handleTaskFailure(ctx context.Context, taskID, workerID string, 
 		go func() {
 			time.Sleep(backoffDelay)
 			q.store.Append("queen.retry", map[string]interface{}{
-				"task_id":      taskID,
-				"retry_count":  t.RetryCount,
-				"error":        errMsg,
-				"error_type":   string(errType),
-				"backoff_ms":   backoffDelay.Milliseconds(),
+				"task_id":     taskID,
+				"retry_count": t.RetryCount,
+				"error":       errMsg,
+				"error_type":  string(errType),
+				"backoff_ms":  backoffDelay.Milliseconds(),
 			})
 		}()
 	} else if !isRetryable {
@@ -784,10 +774,10 @@ func (q *Queen) handleTaskFailure(ctx context.Context, taskID, workerID string, 
 		q.tasks.UpdateStatus(taskID, task.StatusFailed)
 		q.db.UpdateTaskStatus(q.sessionID, taskID, "failed")
 		q.store.Append("queen.task_failed", map[string]interface{}{
-			"task_id":     taskID,
-			"error":       errMsg,
-			"error_type":  string(errType),
-			"permanent":   true,
+			"task_id":    taskID,
+			"error":      errMsg,
+			"error_type": string(errType),
+			"permanent":  true,
 		})
 	} else {
 		// Max retries exceeded

@@ -182,9 +182,9 @@ func (s *DB) LatestSession() (*SessionInfo, error) {
 // It excludes sessions with status 'done' or 'cancelled'.
 func (s *DB) FindResumableSession() (*SessionInfo, error) {
 	row := s.db.QueryRow(`
-		SELECT id, objective, status, created_at, updated_at 
-		FROM sessions 
-		WHERE status NOT IN ('done', 'cancelled') 
+		SELECT id, objective, status, created_at, updated_at
+		FROM sessions
+		WHERE status NOT IN ('done', 'cancelled')
 		ORDER BY created_at DESC LIMIT 1`)
 	var si SessionInfo
 	if err := row.Scan(&si.ID, &si.Objective, &si.Status, &si.CreatedAt, &si.UpdatedAt); err != nil {

@@ -58,10 +58,7 @@ func (c *Context) Compact(summarizer func(messages []Message) (string, error)) e
 	}
 
 	// Keep the last 25% of messages, compact the rest
-	keepCount := len(c.messages) / 4
-	if keepCount < 2 {
-		keepCount = 2
-	}
+	keepCount := max(len(c.messages)/4, 2)
 	toCompact := c.messages[:len(c.messages)-keepCount]
 	toKeep := c.messages[len(c.messages)-keepCount:]
 

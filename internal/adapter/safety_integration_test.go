@@ -341,7 +341,6 @@ func TestSafetyGuardWithAllAdapters(t *testing.T) {
 		"exec":     NewExecAdapter(tempDir, guard),
 		"kimi":     NewKimiAdapter("echo", []string{}, tempDir, guard),
 		"gemini":   NewGeminiAdapter("echo", []string{}, tempDir, guard),
-		"shelley":  NewShelleyAdapter("echo", []string{}, tempDir, guard),
 	}
 
 	for name, adap := range adapters {

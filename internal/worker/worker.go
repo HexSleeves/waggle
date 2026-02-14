@@ -134,7 +134,10 @@ func (p *Pool) KillAll() {
 	defer p.mu.Unlock()
 	for _, w := range p.workers {
 		if w.Monitor() == StatusRunning {
-			w.Kill()
+			err := w.Kill()
+			if err != nil {
+				fmt.Printf("error killing worker %s: %v\n", w.ID(), err)
+			}
 		}
 	}
 }

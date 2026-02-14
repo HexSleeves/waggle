@@ -95,10 +95,6 @@ func DefaultConfig() *Config {
 			"gemini": {
 				Command: "gemini",
 			},
-			"shelley": {
-				Command: "shelley",
-				Args:    []string{"-p"},
-			},
 			"exec": {
 				Command: "bash",
 			},

@@ -199,28 +199,28 @@ func (w *ClaudeWorker) Output() string {
 
 func buildPrompt(t *task.Task) string {
 	var b strings.Builder
-	b.WriteString(fmt.Sprintf("Task: %s\n", t.Title))
-	b.WriteString(fmt.Sprintf("Type: %s\n", t.Type))
-	b.WriteString(fmt.Sprintf("Description:\n%s\n", t.Description))
+	fmt.Fprintf(&b, "Task: %s\n", t.Title)
+	fmt.Fprintf(&b, "Type: %s\n", t.Type)
+	fmt.Fprintf(&b, "Description:\n%s\n", t.Description)
 
 	if len(t.Context) > 0 {
-		b.WriteString("\nContext:\n")
+		fmt.Fprintf(&b, "\nContext:\n")
 		for k, v := range t.Context {
-			b.WriteString(fmt.Sprintf("- %s: %s\n", k, v))
+			fmt.Fprintf(&b, "- %s: %s\n", k, v)
 		}
 	}
 
 	if len(t.AllowedPaths) > 0 {
-		b.WriteString(fmt.Sprintf("\nOnly modify files in: %s\n", strings.Join(t.AllowedPaths, ", ")))
+		fmt.Fprintf(&b, "\nOnly modify files in: %s\n", strings.Join(t.AllowedPaths, ", "))
 	}
 
 	// Scope constraints — tell the worker what NOT to do
 	if len(t.Constraints) > 0 {
-		b.WriteString("\n--- SCOPE CONSTRAINTS (you MUST follow these) ---\n")
+		fmt.Fprintf(&b, "\n--- SCOPE CONSTRAINTS (you MUST follow these) ---\n")
 		for _, c := range t.Constraints {
-			b.WriteString(fmt.Sprintf("• %s\n", c))
+			fmt.Fprintf(&b, "• %s\n", c)
 		}
-		b.WriteString("--- END CONSTRAINTS ---\n")
+		fmt.Fprintf(&b, "--- END CONSTRAINTS ---\n")
 	}
 
 	return b.String()

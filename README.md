@@ -103,7 +103,6 @@ queen-bee/
 │   │   ├── claude.go       #    Claude Code (-p flag)
 │   │   ├── codex.go        #    Codex (exec subcommand)
 │   │   ├── opencode.go     #    OpenCode CLI
-│   │   ├── shelley.go      #    Shelley CLI
 │   │   └── exec.go         #    Direct shell execution (bash -c)
 │   ├── bus/                # 📨 In-process pub/sub message bus
 │   │   └── bus.go
@@ -127,6 +126,7 @@ queen-bee/
 ## Core Modules
 
 ### Queen (`internal/queen`)
+
 The central coordinator running a **Plan → Delegate → Monitor → Review** loop:
 
 1. **Plan** — Decomposes the objective into a task graph via an LLM call
@@ -137,6 +137,7 @@ The central coordinator running a **Plan → Delegate → Monitor → Review** l
 The loop continues until all tasks are complete or max iterations are reached.
 
 ### Workers (`internal/worker`)
+
 Ephemeral, stateless execution units implementing the `Bee` interface:
 
 ```go
@@ -154,6 +155,7 @@ type Bee interface {
 Managed by a `Pool` that enforces concurrency limits.
 
 ### Adapters (`internal/adapter`)
+
 Wrap coding agent CLIs behind a uniform interface:
 
 | Adapter | CLI | Command |
@@ -164,37 +166,46 @@ Wrap coding agent CLIs behind a uniform interface:
 | `kimi` | Kimi Code | `kimi --print --final-message-only -p "<prompt>"` |
 | `gemini` | Gemini CLI | `echo "<prompt>" \| gemini` |
 | `exec` | Shell (bash) | `bash -c "<description>"` |
-| `shelley` | Shelley | `shelley -p "<prompt>"` |
 
 The **Task Router** maps task types to adapters (e.g., code tasks → claude-code, test tasks → codex).
 
 ### Message Bus (`internal/bus`)
+
 In-process pub/sub for decoupled event handling. Event types:
+
 - `task.created`, `task.status_changed`, `task.assigned`
 - `worker.spawned`, `worker.completed`, `worker.failed`
 - `blackboard.update`, `queen.decision`, `queen.plan`
 
 ### Blackboard (`internal/blackboard`)
+
 Shared memory space where workers post partial results:
+
 - Queen reads to build context for decisions
 - Supports querying by key, tag, worker, or task
 - Includes a `Summarize()` method for context compaction
 
 ### State (`internal/state`)
+
 Durable persistence layer:
+
 - **`log.jsonl`** — Append-only event log (every bus message is recorded)
 - **`state.json`** — Snapshot of current state for quick resume
 - Enables session resume after interruption
 
 ### Context Compaction (`internal/compact`)
+
 Manages the Queen's context window:
+
 - Estimates token usage (~4 chars/token)
 - Auto-compacts at 75% capacity
 - Keeps recent 25% of messages, summarizes the rest
 - Pluggable summarizer (default: extractive; can be LLM-backed)
 
 ### Safety (`internal/safety`)
+
 Enforces worker boundaries:
+
 - Path allowlisting (workers can only access specified directories)
 - Command blocklisting (prevents dangerous commands)
 - File size limits
@@ -236,6 +247,7 @@ Enforces worker boundaries:
 ## Persistence & Resume
 
 All state is stored in `.hive/`:
+
 ```
 .hive/
 ├── log.jsonl    # Every event, append-only
@@ -243,6 +255,7 @@ All state is stored in `.hive/`:
 ```
 
 Interrupted sessions can be resumed:
+
 ```bash
 queen-bee resume
 ```

@@ -1,0 +1,90 @@
+package main
+
+import (
+	"context"
+
+	"github.com/urfave/cli/v3"
+)
+
+const version = "0.1.0"
+
+// newApp creates the CLI application with all flags and commands.
+func newApp() *cli.Command {
+	return &cli.Command{
+		Name:        "queen-bee",
+		Usage:       "Agent Orchestration System",
+		Version:     version,
+		UsageText:   "queen-bee [global options] command [command options] [arguments...]",
+		Description: "Queen Bee orchestrates AI agents to accomplish complex objectives",
+		Flags: []cli.Flag{
+			&cli.StringFlag{
+				Name:    "config",
+				Aliases: []string{"c"},
+				Usage:   "Path to config file",
+				Value:   "queen.json",
+			},
+			&cli.StringFlag{
+				Name:    "project",
+				Aliases: []string{"p"},
+				Usage:   "Project directory",
+				Value:   ".",
+			},
+			&cli.StringFlag{
+				Name:    "adapter",
+				Aliases: []string{"a"},
+				Usage:   "Default adapter: claude-code, codex, opencode, exec",
+			},
+			&cli.IntFlag{
+				Name:    "workers",
+				Aliases: []string{"w"},
+				Usage:   "Max parallel workers",
+				Value:   4,
+			},
+			&cli.StringFlag{
+				Name:  "tasks",
+				Usage: "Load pre-defined tasks from a JSON file",
+			},
+			&cli.BoolFlag{
+				Name:    "verbose",
+				Aliases: []string{"v"},
+				Usage:   "Verbose logging",
+			},
+		},
+		Commands: []*cli.Command{
+			{
+				Name:   "run",
+				Usage:  "Run the queen with an objective",
+				Action: cmdRun,
+			},
+			{
+				Name:   "resume",
+				Usage:  "Resume an interrupted session",
+				Action: cmdResume,
+			},
+			{
+				Name:   "status",
+				Usage:  "Show status of current hive session",
+				Action: cmdStatus,
+			},
+			{
+				Name:   "init",
+				Usage:  "Initialize a .hive directory",
+				Action: cmdInit,
+			},
+			{
+				Name:   "config",
+				Usage:  "Show current configuration",
+				Action: cmdConfig,
+			},
+		},
+		Action: func(ctx context.Context, cmd *cli.Command) error {
+			// Default action: treat remaining args as objective (implicit run)
+			args := cmd.Args().Slice()
+			if len(args) == 0 {
+				return cli.ShowAppHelp(cmd)
+			}
+			objective := args[0]
+			return runObjective(ctx, cmd, objective)
+		},
+	}
+}

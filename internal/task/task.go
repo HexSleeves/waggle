@@ -40,27 +40,27 @@ const (
 )
 
 type Task struct {
-	ID           string            `json:"id"`
-	ParentID     string            `json:"parent_id,omitempty"`
-	Type         Type              `json:"type"`
-	Status       Status            `json:"status"`
-	Priority     Priority          `json:"priority"`
-	Title        string            `json:"title"`
-	Description  string            `json:"description"`
-	Constraints  []string          `json:"constraints,omitempty"`
-	Context      map[string]string `json:"context,omitempty"`
-	AllowedPaths []string          `json:"allowed_paths,omitempty"`
-	WorkerID     string            `json:"worker_id,omitempty"`
-	Result       *Result           `json:"result,omitempty"`
-	MaxRetries   int               `json:"max_retries"`
-	RetryCount   int               `json:"retry_count"`
-	LastError    string            `json:"last_error,omitempty"`
-	LastErrorType string           `json:"last_error_type,omitempty"`
-	CreatedAt    time.Time         `json:"created_at"`
-	StartedAt    *time.Time        `json:"started_at,omitempty"`
-	CompletedAt  *time.Time        `json:"completed_at,omitempty"`
-	Timeout      time.Duration     `json:"timeout,omitempty"`
-	DependsOn    []string          `json:"depends_on,omitempty"`
+	ID            string            `json:"id"`
+	ParentID      string            `json:"parent_id,omitempty"`
+	Type          Type              `json:"type"`
+	Status        Status            `json:"status"`
+	Priority      Priority          `json:"priority"`
+	Title         string            `json:"title"`
+	Description   string            `json:"description"`
+	Constraints   []string          `json:"constraints,omitempty"`
+	Context       map[string]string `json:"context,omitempty"`
+	AllowedPaths  []string          `json:"allowed_paths,omitempty"`
+	WorkerID      string            `json:"worker_id,omitempty"`
+	Result        *Result           `json:"result,omitempty"`
+	MaxRetries    int               `json:"max_retries"`
+	RetryCount    int               `json:"retry_count"`
+	LastError     string            `json:"last_error,omitempty"`
+	LastErrorType string            `json:"last_error_type,omitempty"`
+	CreatedAt     time.Time         `json:"created_at"`
+	StartedAt     *time.Time        `json:"started_at,omitempty"`
+	CompletedAt   *time.Time        `json:"completed_at,omitempty"`
+	Timeout       time.Duration     `json:"timeout,omitempty"`
+	DependsOn     []string          `json:"depends_on,omitempty"`
 }
 
 type Result struct {

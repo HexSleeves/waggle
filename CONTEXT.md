@@ -40,7 +40,7 @@ User Objective
 | `cmd/queen-bee` | `main.go` | ~430 | CLI entry point: `run`, `init`, `status`, `config`, `resume` |
 | `internal/queen` | `queen.go` | ~1190 | **Core orchestrator** — Plan/Delegate/Monitor/Review loop |
 | `internal/worker` | `worker.go` | ~150 | `Bee` interface + concurrent `Pool` with limits |
-| `internal/adapter` | 7 adapters + utils | ~3400 | CLI wrappers: claude, codex, opencode, kimi, gemini, exec, shelley |
+| `internal/adapter` | 7 adapters + utils | ~3400 | CLI wrappers: claude, codex, opencode, kimi, gemini, exec |
 | `internal/adapter` | `adapter.go` | ~100 | `Registry` + `TaskRouter` (maps task types → adapters) |
 | `internal/bus` | `bus.go` | ~110 | In-process pub/sub message bus with panic-safe handler dispatch |
 | `internal/blackboard` | `blackboard.go` | ~165 | Shared memory — workers post results, Queen reads (deep-copy on History) |
@@ -57,6 +57,7 @@ User Objective
 ## Key Interfaces
 
 ### `worker.Bee` — What every worker must implement
+
 ```go
 type Bee interface {
     ID() string
@@ -70,6 +71,7 @@ type Bee interface {
 ```
 
 ### `adapter.Adapter` — How CLIs are wrapped
+
 ```go
 type Adapter interface {
     Name() string
@@ -89,6 +91,7 @@ Three layers control what workers can and cannot do:
 ## Safety Guard
 
 The `safety.Guard` is wired into all adapter constructors and enforced at spawn time:
+
 - `ValidateTaskPaths()` — checks task's allowed_paths against the guard's allowlist
 - `CheckCommand()` — scans task description/script for blocked commands
 - `IsReadOnly()` — prepends read-only warning to worker prompts when enabled
@@ -104,7 +107,6 @@ The `safety.Guard` is wired into all adapter constructors and enforced at spawn 
 | `claude-code` | Claude Code | `claude -p "<prompt>"` | 🔑 Needs `/login` |
 | `codex` | Codex | `codex exec "<prompt>"` | 🔑 Needs auth |
 | `exec` | bash | `bash -c "<description>"` | ✅ Always available |
-| `shelley` | Shelley | `shelley -p "<prompt>"` | ⚠️ No `-p` flag in shelley |
 
 ## Data Flow
 
@@ -125,6 +127,7 @@ The `safety.Guard` is wired into all adapter constructors and enforced at spawn 
 ```
 
 ### SQLite Schema
+
 - **sessions** — one row per `queen-bee run` invocation (id, objective, status, phase, iteration, timestamps)
 - **events** — append-only event log indexed by session + type
 - **tasks** — full task state (status, worker_id, result JSON, result_data, retries, deps)
@@ -210,6 +213,6 @@ queen-bee resume                         # Resume interrupted session (loads tas
 
 ## Repository
 
-- GitHub: https://github.com/HexSleeves/queen-bee
+- GitHub: <https://github.com/HexSleeves/queen-bee>
 - 8 commits on `main`
 - No branches, no CI, no releases

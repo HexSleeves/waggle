@@ -216,11 +216,11 @@ func NewPermanentError(err error, kind string) error {
 
 // RecoveryResult holds the result of a recovered panic
 type RecoveryResult struct {
-	Recovered   bool
-	PanicValue  interface{}
-	ErrorMsg    string
-	ErrorType   ErrorType
-	StackTrace  string
+	Recovered  bool
+	PanicValue interface{}
+	ErrorMsg   string
+	ErrorType  ErrorType
+	StackTrace string
 }
 
 // RecoverPanic recovers from a panic and returns a RecoveryResult.
