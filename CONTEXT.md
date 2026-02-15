@@ -36,8 +36,8 @@ User Objective
    ┌─────────────────────────────┐
    │      TUI Dashboard          │
    │  ┌──────────────────────┐   │
-   │  │ 👑 Queen Panel        │   │  Real-time LLM reasoning,
-   │  │  thinking / tools     │   │  tool calls, results
+   │  │ 👑 Queen / ⚙ Worker  │   │  Tab to switch panels,
+   │  │  live streaming       │   │  real-time output
    │  ├──────────────────────┤   │
    │  │ 📋 Task Panel         │   │  Task status, worker
    │  │  status / workers     │   │  assignments, progress
@@ -55,7 +55,7 @@ The Queen runs as an autonomous tool-using LLM agent. She receives the objective
 
 ### Legacy Mode (fallback / `--legacy` flag)
 
-The structured Plan → Delegate → Monitor → Review → Replan loop. The Queen's LLM is called at specific phases (planning, review, replan) with structured prompts.
+The structured Plan → Delegate → Monitor → Review → Replan loop. The Queen's LLM is called at specific phases (planning, review, replan) with structured prompts. After review, skips back to Delegate if ready tasks exist (avoids unnecessary re-planning).
 
 ## Module Map
 
@@ -74,9 +74,9 @@ The structured Plan → Delegate → Monitor → Review → Replan loop. The Que
 | `internal/llm` | `gemini.go` | Google Gemini API client with tool-use |
 | `internal/llm` | `cli.go` | CLI-based LLM wrapper (no tool support) |
 | `internal/llm` | `factory.go` | Provider factory: anthropic, openai, gemini, codex, kimi, gemini-cli, claude-cli, opencode |
-| `internal/tui` | `model.go`, `view.go`, `styles.go`, `events.go`, `bridge.go` | **Bubble Tea TUI dashboard** — real-time Queen/task/worker display |
+| `internal/tui` | `model.go`, `view.go`, `styles.go`, `events.go`, `bridge.go` | **Bubble Tea TUI dashboard** — Queen/worker/task panels with live streaming |
 | `internal/worker` | `worker.go` | `Bee` interface + concurrent `Pool` with limits |
-| `internal/adapter` | 6 adapters + utils | CLI wrappers: claude, codex, opencode, kimi, gemini, exec |
+| `internal/adapter` | 6 adapters + `utils.go` | CLI wrappers: claude, codex, opencode, kimi, gemini, exec. All use `streamWriter` for live output. |
 | `internal/adapter` | `adapter.go` | `Registry` + `TaskRouter` (maps task types → configured default adapter) |
 | `internal/bus` | `bus.go` | In-process pub/sub message bus with panic-safe handler dispatch |
 | `internal/blackboard` | `blackboard.go` | Shared memory — workers post results, Queen reads (deep-copy on History) |
@@ -87,7 +87,7 @@ The structured Plan → Delegate → Monitor → Review → Replan loop. The Que
 | `internal/compact` | `compact.go` | Context window management, token estimation, summarization |
 | `internal/errors` | `errors.go` | Error classification, retry/permanent types, backoff |
 
-**Total: ~8800 lines of source across 33 Go files + ~7500 lines of tests**
+**Total: ~10200 lines of source + ~7500 lines of tests across 17,600+ total Go lines (54 commits)**
 
 ## Key Interfaces
 
@@ -101,7 +101,7 @@ type Bee interface {
     Monitor() Status  // idle, running, stuck, complete, failed
     Result() *task.Result
     Kill() error
-    Output() string
+    Output() string   // Returns live streaming output during execution
 }
 ```
 
@@ -138,7 +138,7 @@ Implementations: `AnthropicClient`, `OpenAIClient`, `GeminiClient` (all tool-cap
 ## Queen's Agent Tools
 
 | Tool | Purpose |
-|------|---------|
+|------|--------|
 | `create_tasks` | Create tasks in the task graph with types, priorities, dependencies, constraints |
 | `assign_task` | Assign a pending task to a worker (respects deps, pool capacity, configured adapter) |
 | `wait_for_workers` | Block until one or more workers complete (with timeout) |
@@ -153,15 +153,22 @@ Implementations: `AnthropicClient`, `OpenAIClient`, `GeminiClient` (all tool-cap
 
 ## TUI Dashboard
 
-Bubble Tea-based terminal UI with three panels:
+Bubble Tea-based terminal UI with switchable panels:
 
-- **Queen Panel** — Real-time display of Queen's thinking, tool calls, and results. Scrollable with j/k or arrow keys.
+- **Queen Panel** — Real-time display of Queen's thinking, tool calls, and results. Scrollable (j/k, arrows). Scroll clamped so content is always visible.
+- **Worker Panels** — Live streaming output from each active worker. Tab/Shift+Tab to cycle, ←→ to navigate, 0 to return to Queen.
 - **Task Panel** — Task list with status icons (⏳ pending, 🔄 running, ✅ complete, ❌ failed), worker assignments.
-- **Status Bar** — Elapsed time, active worker count, completion status.
+- **Status Bar** — Elapsed time, active worker count, navigation hints.
 
-The TUI is automatically used when stdout is a TTY. Falls back to plain log output with `--plain` flag. After completion, waits for user keypress before exiting.
+The TUI auto-detects TTY. Falls back to plain log output with `--plain`. After completion, waits for user keypress before exiting. Interactive mode (no args) shows an objective prompt.
 
-The bridge (`tui/bridge.go`) routes log output from the Queen into structured TUI messages, with message buffering for events that arrive before the TUI starts.
+### Output Streaming
+
+All 6 adapters use `streamWriter` (thread-safe `io.MultiWriter` tee) to write process stdout/stderr to `w.output` in real-time. The TUI polling goroutine sends `WorkerOutputMsg` every 500ms so worker panels show live content as processes produce it.
+
+### Bridge
+
+The bridge (`tui/bridge.go`) routes log output from the Queen into structured TUI messages, with message buffering for events that arrive before the TUI starts. Supports quiet mode (`NewQuietProgram()`) that suppresses all output.
 
 ## Provider Selection
 
@@ -177,11 +184,15 @@ Configured via `waggle.json`:
 {"queen": {"provider": "opencode"}}    // OpenCode CLI (no tool-use, legacy mode)
 ```
 
-No provider = review/replan disabled, legacy exit-code-based behavior.
+## Task Router & Parallelism
 
-## Task Router
+`TaskRouter` maps task types to adapters, initialized from `workers.default_adapter` config.
 
-`TaskRouter` maps task types to adapters. It initializes all routes from `workers.default_adapter` in the config. The Queen's `assign_task` tool uses the router to select which adapter spawns the worker for each task.
+Parallel execution is enforced at multiple levels:
+- **Planning prompt** tells the LLM planner the worker count and instructs it to minimize dependencies — only add `depends_on` when tasks truly can't run without another's output.
+- **Agent mode prompt** instructs the Queen to assign ALL ready tasks before waiting.
+- **Legacy mode** Review→Delegate shortcut: when review finds ready tasks, skips back to delegation instead of re-planning.
+- **Worker pool** enforces `max_parallel` limit; `assign_task` returns error when full.
 
 ## Scope Constraints System
 
@@ -220,6 +231,7 @@ The `safety.Guard` is wired into all adapter constructors and enforced at spawn 
 ```bash
 waggle init                          # Create .hive/ and waggle.json
 waggle run "<objective>"              # Run with AI planning (TUI if TTY)
+waggle                               # Interactive TUI mode (prompts for objective)
 waggle --adapter kimi run "<obj>"     # Specify worker adapter
 waggle --adapter exec --tasks f.json run "<obj>"  # Pre-defined tasks
 waggle --workers 8 run "<obj>"        # Set parallelism
@@ -232,20 +244,16 @@ waggle config                         # Show configuration
 waggle resume <session-id>            # Resume interrupted session
 ```
 
-### Output Modes
+## Build & Development
 
-| Flag | Description | Use Case |
-|------|-------------|----------|
-| `--plain` | Plain text log output, no TUI | Non-TTY environments, simpler logs |
-| `--quiet` | Suppress progress output, only errors/final result | CI pipelines, minimal output |
-| `--json` | Machine-readable JSON output with structured results | Scripting, integration with other tools |
-
-**When to use each mode:**
-
-- **Interactive (default TUI)**: Best for local development — real-time dashboard showing Queen reasoning, task progress, and worker status
-- **Plain**: When you want readable logs without the interactive interface, or when piping output
-- **Quiet**: For CI/CD pipelines where you only care about success/failure and final results
-- **JSON**: When integrating with other tools or scripts that need to parse task results programmatically
+```bash
+just build          # Build ./waggle binary
+just test           # Run all tests
+just test-pkg queen # Test specific package
+just ci             # fmt-check + vet + test
+just run "<obj>"    # Build & run with objective
+just run-interactive # Launch TUI prompt
+```
 
 ## Configuration (`waggle.json`)
 
@@ -310,6 +318,8 @@ waggle resume <session-id>            # Resume interrupted session
 14. **Agent mode** — Queen as autonomous tool-using agent with Anthropic/OpenAI/Gemini providers ✅
 15. **TUI dashboard** — Real-time Bubble Tea display of Queen reasoning, tasks, workers ✅
 16. **Session resume** — Agent-mode conversation restored from SQLite kv store ✅
+17. **Parallel task execution** — 4 workers running concurrently with proper dependency checks ✅
+18. **Live worker output streaming** — TUI shows worker output in real-time via streamWriter ✅
 
 ## Known Issues
 
@@ -328,5 +338,6 @@ waggle resume <session-id>            # Resume interrupted session
 ## Repository
 
 - GitHub: <https://github.com/HexSleeves/waggle>
-- 41 commits on `main`
-- No branches, no CI, no releases
+- 54 commits on `main`
+- Build: `just build` / `just ci`
+- No CI pipeline yet, no releases
