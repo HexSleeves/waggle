@@ -9,10 +9,14 @@ import (
 	"path/filepath"
 	"syscall"
 
+	"github.com/exedev/waggle/internal/bus"
 	"github.com/exedev/waggle/internal/config"
 	"github.com/exedev/waggle/internal/queen"
 	"github.com/exedev/waggle/internal/state"
+	"github.com/exedev/waggle/internal/task"
+	"github.com/exedev/waggle/internal/tui"
 	"github.com/urfave/cli/v3"
+	"golang.org/x/term"
 )
 
 func loadConfigFromCtx(ctx context.Context, cmd *cli.Command) *config.Config {
@@ -94,15 +98,118 @@ func cmdRun(ctx context.Context, cmd *cli.Command) error {
 }
 
 func runObjective(ctx context.Context, cmd *cli.Command, objective string) error {
-	logger := log.New(os.Stderr, "", log.LstdFlags)
 	cfg := loadConfigFromCtx(ctx, cmd)
+	tasksFile := cmd.String("tasks")
+	forceLegacy := cmd.Bool("legacy")
+	forcePlain := cmd.Bool("plain")
+
+	// Decide: TUI or plain mode
+	isTTY := term.IsTerminal(int(os.Stdout.Fd()))
+	useTUI := isTTY && !forcePlain
+
+	if useTUI {
+		return runWithTUI(ctx, cfg, objective, tasksFile, forceLegacy)
+	}
+	return runPlain(ctx, cmd, cfg, objective, tasksFile, forceLegacy)
+}
+
+func runWithTUI(ctx context.Context, cfg *config.Config, objective, tasksFile string, forceLegacy bool) error {
+	// Create queen with a logger that writes to the TUI
+	maxTurns := cfg.Queen.MaxIterations
+	if maxTurns <= 0 {
+		maxTurns = 50
+	}
+	tuiProg := tui.NewProgram(objective, maxTurns)
+
+	// Create a logger that routes to the TUI
+	logger := log.New(tuiProg.LogWriter(), "", log.LstdFlags)
+
+	q, err := queen.New(cfg, logger)
+	if err != nil {
+		return fmt.Errorf("init queen: %w", err)
+	}
+
+	// Redirect the queen's logger to TUI
+	q.SetLogger(logger)
+
+	// Subscribe to bus events for task/worker updates
+	q.Bus().Subscribe(bus.MsgTaskCreated, func(msg bus.Message) {
+		if t, ok := msg.Payload.(*task.Task); ok {
+			tuiProg.SendTaskUpdate(t.ID, t.Title, string(t.Type), string(t.Status), "")
+		}
+	})
+	q.Bus().Subscribe(bus.MsgTaskStatusChanged, func(msg bus.Message) {
+		if payload, ok := msg.Payload.(map[string]task.Status); ok {
+			tuiProg.SendTaskUpdate(msg.TaskID, "", "", string(payload["new"]), "")
+		}
+	})
+	q.Bus().Subscribe(bus.MsgTaskAssigned, func(msg bus.Message) {
+		tuiProg.SendTaskUpdate(msg.TaskID, "", "", "running", msg.WorkerID)
+	})
+	q.Bus().Subscribe(bus.MsgWorkerSpawned, func(msg bus.Message) {
+		tuiProg.Send(tui.WorkerUpdateMsg{
+			ID: msg.WorkerID, TaskID: msg.TaskID, Status: "running",
+		})
+	})
+	q.Bus().Subscribe(bus.MsgWorkerCompleted, func(msg bus.Message) {
+		tuiProg.Send(tui.WorkerUpdateMsg{
+			ID: msg.WorkerID, TaskID: msg.TaskID, Status: "done",
+		})
+	})
+	q.Bus().Subscribe(bus.MsgWorkerFailed, func(msg bus.Message) {
+		tuiProg.Send(tui.WorkerUpdateMsg{
+			ID: msg.WorkerID, TaskID: msg.TaskID, Status: "failed",
+		})
+	})
+
+	// Load pre-defined tasks
+	if tasksFile != "" {
+		tasks, err := loadTasksFile(tasksFile, cfg)
+		if err != nil {
+			q.Close()
+			return fmt.Errorf("load tasks file: %w", err)
+		}
+		q.SetTasks(tasks)
+	}
+
+	// Run the queen in a goroutine, TUI in the main thread
+	runCtx, cancel := context.WithCancel(ctx)
+	var runErr error
+
+	go func() {
+		defer cancel()
+		defer q.Close()
+
+		if !forceLegacy && q.SupportsAgentMode() {
+			runErr = q.RunAgent(runCtx, objective)
+		} else {
+			runErr = q.Run(runCtx, objective)
+		}
+
+		if runErr != nil {
+			tuiProg.SendDone(false, "", runErr.Error())
+		} else {
+			tuiProg.SendDone(true, "Objective complete", "")
+		}
+	}()
+
+	// Run the TUI (blocks until done)
+	if _, err := tuiProg.Run(); err != nil {
+		cancel()
+		q.Close()
+		return fmt.Errorf("TUI error: %w", err)
+	}
+
+	return runErr
+}
+
+func runPlain(ctx context.Context, cmd *cli.Command, cfg *config.Config, objective, tasksFile string, forceLegacy bool) error {
+	logger := log.New(os.Stderr, "", log.LstdFlags)
 
 	verbose := cmd.Bool("verbose")
 	if verbose {
 		logger.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	}
-
-	tasksFile := cmd.String("tasks")
 
 	fmt.Println("")
 	fmt.Println("══════════════════════════════════════════════════")
@@ -122,7 +229,6 @@ func runObjective(ctx context.Context, cmd *cli.Command, objective string) error
 	}
 	defer q.Close()
 
-	// Load pre-defined tasks if provided
 	if tasksFile != "" {
 		tasks, err := loadTasksFile(tasksFile, cfg)
 		if err != nil {
@@ -132,21 +238,17 @@ func runObjective(ctx context.Context, cmd *cli.Command, objective string) error
 		logger.Printf("Loaded %d tasks from %s", len(tasks), tasksFile)
 	}
 
-	// Handle graceful shutdown
 	runCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 
 	sigs := make(chan os.Signal, 1)
 	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
-
 	go func() {
 		<-sigs
 		logger.Println("\nReceived shutdown signal, gracefully stopping...")
 		cancel()
 	}()
 
-	// Use agent mode (tool-using LLM) unless --legacy or no tool support
-	forceLegacy := cmd.Bool("legacy")
 	var runErr error
 	if !forceLegacy && q.SupportsAgentMode() {
 		logger.Println("✓ Agent mode: Queen will use tools autonomously")

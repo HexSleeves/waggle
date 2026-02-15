@@ -1025,6 +1025,16 @@ func (q *Queen) Close() error {
 	return q.db.Close()
 }
 
+// SetLogger replaces the Queen's logger (used by TUI to capture output).
+func (q *Queen) SetLogger(logger *log.Logger) {
+	q.logger = logger
+}
+
+// Bus returns the Queen's message bus (used by TUI to subscribe to events).
+func (q *Queen) Bus() *bus.MessageBus {
+	return q.bus
+}
+
 // Status returns the current queen status for display
 func (q *Queen) Status() map[string]interface{} {
 	q.mu.RLock()

@@ -21,6 +21,10 @@ func newApp() *cli.Command {
 				Name:  "legacy",
 				Usage: "Force legacy orchestration loop (no agent mode)",
 			},
+			&cli.BoolFlag{
+				Name:  "plain",
+				Usage: "Plain log output (no TUI)",
+			},
 			&cli.StringFlag{
 				Name:    "config",
 				Aliases: []string{"c"},
