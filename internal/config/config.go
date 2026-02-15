@@ -29,6 +29,7 @@ type QueenConfig struct {
 	Model         string        `json:"model"`
 	Provider      string        `json:"provider"`
 	APIKey        string        `json:"api_key,omitempty"`
+	BaseURL       string        `json:"base_url,omitempty"`
 	MaxIterations int           `json:"max_iterations"`
 	PlanTimeout   time.Duration `json:"plan_timeout"`
 	ReviewTimeout time.Duration `json:"review_timeout"`

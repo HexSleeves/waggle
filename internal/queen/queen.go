@@ -270,6 +270,7 @@ func New(cfg *config.Config, logger *log.Logger) (*Queen, error) {
 			Provider: cfg.Queen.Provider,
 			Model:    cfg.Queen.Model,
 			APIKey:   cfg.Queen.APIKey,
+			BaseURL:  cfg.Queen.BaseURL,
 			WorkDir:  cfg.ProjectDir,
 		})
 		if err != nil {
