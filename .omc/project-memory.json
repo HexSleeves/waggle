@@ -1,6 +1,6 @@
 {
   "version": "1.0.0",
-  "lastScanned": 1771039169636,
+  "lastScanned": 1771124627762,
   "projectRoot": "/Users/jacob.lecoq.ext/Projects/CLI-Tools/queen-bee",
   "techStack": {
     "languages": [
@@ -33,7 +33,9 @@
   "structure": {
     "isMonorepo": false,
     "workspaces": [],
-    "mainDirectories": [],
+    "mainDirectories": [
+      "assets"
+    ],
     "gitBranches": {
       "defaultBranch": "main",
       "branchingStrategy": null
@@ -41,92 +43,42 @@
   },
   "customNotes": [],
   "directoryMap": {
+    "assets": {
+      "path": "assets",
+      "purpose": "Static assets",
+      "fileCount": 4,
+      "lastAccessed": 1771124627733,
+      "keyFiles": [
+        "banner.svg",
+        "icon.svg",
+        "logo-light.svg",
+        "logo.svg"
+      ]
+    },
     "cmd": {
       "path": "cmd",
       "purpose": null,
       "fileCount": 0,
-      "lastAccessed": 1771039169623,
+      "lastAccessed": 1771124627733,
       "keyFiles": []
     },
     "internal": {
       "path": "internal",
       "purpose": null,
       "fileCount": 0,
-      "lastAccessed": 1771039169624,
+      "lastAccessed": 1771124627734,
       "keyFiles": []
     },
     "internal/config": {
       "path": "internal/config",
       "purpose": "Configuration files",
       "fileCount": 1,
-      "lastAccessed": 1771039169624,
+      "lastAccessed": 1771124627734,
       "keyFiles": [
         "config.go"
       ]
     }
   },
-  "hotPaths": [
-    {
-      "path": "cmd/queen-bee/main.go",
-      "accessCount": 8,
-      "lastAccessed": 1771040610194,
-      "type": "file"
-    },
-    {
-      "path": "go.mod",
-      "accessCount": 6,
-      "lastAccessed": 1771123782623,
-      "type": "file"
-    },
-    {
-      "path": "cmd/queen-bee/status.go",
-      "accessCount": 2,
-      "lastAccessed": 1771040636482,
-      "type": "file"
-    },
-    {
-      "path": "cmd/queen-bee/app.go",
-      "accessCount": 2,
-      "lastAccessed": 1771040644654,
-      "type": "file"
-    },
-    {
-      "path": "cmd/queen-bee/commands.go",
-      "accessCount": 2,
-      "lastAccessed": 1771040656198,
-      "type": "file"
-    },
-    {
-      "path": "internal/config/config.go",
-      "accessCount": 2,
-      "lastAccessed": 1771123782102,
-      "type": "file"
-    },
-    {
-      "path": "cmd/queen-bee/tasks.go",
-      "accessCount": 1,
-      "lastAccessed": 1771040610691,
-      "type": "file"
-    },
-    {
-      "path": "internal/safety/safety.go",
-      "accessCount": 1,
-      "lastAccessed": 1771123778212,
-      "type": "file"
-    },
-    {
-      "path": "internal/adapter/safety_integration_test.go",
-      "accessCount": 1,
-      "lastAccessed": 1771123785736,
-      "type": "file"
-    },
-    {
-      "path": "internal/queen/queen_test.go",
-      "accessCount": 1,
-      "lastAccessed": 1771123785737,
-      "type": "file"
-    }
-  ],
+  "hotPaths": [],
   "userDirectives": []
-}
 }
