@@ -1,6 +1,6 @@
 # Waggle — Project Context
 
-> Last updated: 2026-02-14
+> Last updated: 2026-02-15
 
 ## What This Is
 
@@ -14,7 +14,8 @@ Think of it as a task runner where the tasks are executed by AI coding agents in
 User Objective
        │
    ┌───▼───┐
-   │ Queen │  Plan → Delegate → Monitor → Review (LLM) → Replan (LLM)
+   │ Queen │  Autonomous tool-using LLM agent (agent mode)
+   │       │  OR Plan → Delegate → Monitor → Review → Replan (legacy mode)
    └───┬───┘
        │ spawns via adapters (with safety guard + scope constraints)
    ┌───┴────────────┬──────────────┐
@@ -31,31 +32,60 @@ User Objective
             │  SQLite DB │  persistent state
             │  Event Log │  append-only audit
             └───────────┘
+
+   ┌─────────────────────────────┐
+   │      TUI Dashboard          │
+   │  ┌──────────────────────┐   │
+   │  │ 👑 Queen Panel        │   │  Real-time LLM reasoning,
+   │  │  thinking / tools     │   │  tool calls, results
+   │  ├──────────────────────┤   │
+   │  │ 📋 Task Panel         │   │  Task status, worker
+   │  │  status / workers     │   │  assignments, progress
+   │  ├──────────────────────┤   │
+   │  │ 🐝 Status Bar         │   │  Elapsed, worker count
+   │  └──────────────────────┘   │
+   └─────────────────────────────┘
 ```
+
+## Two Execution Modes
+
+### Agent Mode (default when provider supports tools)
+The Queen runs as an autonomous tool-using LLM agent. She receives the objective, and the Go code just executes tool calls and feeds results back. The Queen decides what tools to call and when: `create_tasks`, `assign_task`, `wait_for_workers`, `get_task_output`, `approve_task`, `reject_task`, `read_file`, `list_files`, `complete`, `fail`.
+
+### Legacy Mode (fallback / `--legacy` flag)
+The structured Plan → Delegate → Monitor → Review → Replan loop. The Queen's LLM is called at specific phases (planning, review, replan) with structured prompts.
 
 ## Module Map
 
-| Package | File(s) | Lines | Purpose |
-|---------|---------|-------|---------|
-| `cmd/waggle` | `main.go`, `app.go`, `commands.go`, `status.go`, `tasks.go` | ~530 | CLI entry point (urfave/cli): `run`, `init`, `status`, `config`, `resume` |
-| `internal/queen` | `queen.go` | ~1260 | **Core orchestrator** — Plan/Delegate/Monitor/Review/Replan loop |
-| `internal/queen` | `review.go` | ~205 | LLM-backed review: evaluates worker output quality |
-| `internal/queen` | `replan.go` | ~140 | LLM-backed replan: identifies follow-up tasks |
-| `internal/llm` | `client.go`, `anthropic.go`, `cli.go`, `factory.go` | ~210 | **Provider-agnostic LLM client** (Anthropic SDK, CLI adapters) |
-| `internal/worker` | `worker.go` | ~150 | `Bee` interface + concurrent `Pool` with limits |
-| `internal/adapter` | 6 adapters + utils | ~3200 | CLI wrappers: claude, codex, opencode, kimi, gemini, exec |
-| `internal/adapter` | `adapter.go` | ~100 | `Registry` + `TaskRouter` (maps task types → adapters) |
-| `internal/bus` | `bus.go` | ~110 | In-process pub/sub message bus with panic-safe handler dispatch |
-| `internal/blackboard` | `blackboard.go` | ~165 | Shared memory — workers post results, Queen reads (deep-copy on History) |
-| `internal/state` | `db.go` | ~510 | **SQLite persistence** — sessions, events, tasks, blackboard, kv |
-| `internal/state` | `state.go` | ~180 | Legacy JSONL append-only event log (still writes in parallel) |
-| `internal/task` | `task.go` | ~270 | Task graph with dependency tracking, priority, status, **cycle detection** |
-| `internal/config` | `config.go` | ~140 | Configuration with defaults, JSON serialization |
-| `internal/safety` | `safety.go` | ~110 | Path allowlisting, command blocklisting — **enforced in all adapters** |
-| `internal/compact` | `compact.go` | ~135 | Context window management, token estimation, summarization |
-| `internal/errors` | `errors.go` | ~330 | Error classification, retry/permanent types, backoff |
+| Package | File(s) | Purpose |
+|---------|---------|--------|
+| `cmd/waggle` | `main.go`, `app.go`, `commands.go`, `status.go`, `tasks.go` | CLI entry point (urfave/cli): `run`, `init`, `status`, `config`, `resume` |
+| `internal/queen` | `queen.go` | **Core orchestrator** — legacy Plan/Delegate/Monitor/Review/Replan loop |
+| `internal/queen` | `agent.go` | **Agent mode** — autonomous tool-using LLM loop with conversation history |
+| `internal/queen` | `tools.go` | Tool definitions + handlers (create_tasks, assign_task, wait, approve, etc.) |
+| `internal/queen` | `prompt.go` | System prompt builder for agent mode |
+| `internal/queen` | `review.go` | LLM-backed review: evaluates worker output quality |
+| `internal/queen` | `replan.go` | LLM-backed replan: identifies follow-up tasks |
+| `internal/llm` | `client.go`, `types.go` | **Provider-agnostic LLM client** + `ToolClient` interface |
+| `internal/llm` | `anthropic.go` | Anthropic API client with tool-use |
+| `internal/llm` | `openai.go` | OpenAI-compatible API client with tool-use |
+| `internal/llm` | `gemini.go` | Google Gemini API client with tool-use |
+| `internal/llm` | `cli.go` | CLI-based LLM wrapper (no tool support) |
+| `internal/llm` | `factory.go` | Provider factory: anthropic, openai, gemini, codex, kimi, gemini-cli, claude-cli, opencode |
+| `internal/tui` | `model.go`, `view.go`, `styles.go`, `events.go`, `bridge.go` | **Bubble Tea TUI dashboard** — real-time Queen/task/worker display |
+| `internal/worker` | `worker.go` | `Bee` interface + concurrent `Pool` with limits |
+| `internal/adapter` | 6 adapters + utils | CLI wrappers: claude, codex, opencode, kimi, gemini, exec |
+| `internal/adapter` | `adapter.go` | `Registry` + `TaskRouter` (maps task types → configured default adapter) |
+| `internal/bus` | `bus.go` | In-process pub/sub message bus with panic-safe handler dispatch |
+| `internal/blackboard` | `blackboard.go` | Shared memory — workers post results, Queen reads (deep-copy on History) |
+| `internal/state` | `db.go` | **SQLite persistence** — sessions, events, tasks, blackboard, kv |
+| `internal/task` | `task.go` | Task graph with dependency tracking, priority, status, **cycle detection** |
+| `internal/config` | `config.go` | Configuration with defaults, JSON serialization |
+| `internal/safety` | `safety.go` | Path allowlisting, command blocklisting — **enforced in all adapters** |
+| `internal/compact` | `compact.go` | Context window management, token estimation, summarization |
+| `internal/errors` | `errors.go` | Error classification, retry/permanent types, backoff |
 
-**Total: ~5800 lines of source across 27 Go files + ~6800 lines of tests**
+**Total: ~8800 lines of source across 33 Go files + ~7500 lines of tests**
 
 ## Key Interfaces
 
@@ -89,37 +119,60 @@ type Client interface {
 }
 ```
 
-Implementations: `AnthropicClient` (SDK), `CLIClient` (wraps any CLI tool).
+### `llm.ToolClient` — LLM with tool-use support (extends Client)
+```go
+type ToolClient interface {
+    Client
+    ChatWithTools(ctx context.Context, system string, messages []ToolMessage, tools []ToolDef) (*Response, error)
+}
+```
 
-## Queen's LLM Intelligence
+Implementations: `AnthropicClient`, `OpenAIClient`, `GeminiClient` (all tool-capable), `CLIClient` (no tools, triggers legacy mode).
 
-The Queen now has her own LLM for reasoning, separate from the worker adapters.
+## Queen's Agent Tools
 
-### Review Phase
-After each task completes, the Queen's LLM evaluates the output:
-- **Scope** — did the worker stay within constraints?
-- **Correctness** — is the output technically correct?
-- **Follow-up** — are there obvious next steps?
+| Tool | Purpose |
+|------|---------|
+| `create_tasks` | Create tasks in the task graph with types, priorities, dependencies, constraints |
+| `assign_task` | Assign a pending task to a worker (respects deps, pool capacity, configured adapter) |
+| `wait_for_workers` | Block until one or more workers complete (with timeout) |
+| `get_status` | Get current status of all tasks |
+| `get_task_output` | Read a completed/failed task's output |
+| `approve_task` | Mark a completed task as approved |
+| `reject_task` | Reject a task with feedback, re-queue for retry |
+| `read_file` | Read a file from the project (safety-checked) |
+| `list_files` | List directory contents |
+| `complete` | Declare the objective complete with summary |
+| `fail` | Declare the objective failed with reason |
 
-Returns a `ReviewVerdict` (approved/rejected with reason, suggestions, new task ideas). Rejected tasks are re-queued with feedback appended.
+## TUI Dashboard
 
-### Replan Phase
-After all tasks complete, the Queen's LLM reviews the full picture:
-- What was the objective?
-- What was completed, what failed?
-- Are additional tasks needed?
+Bubble Tea-based terminal UI with three panels:
+- **Queen Panel** — Real-time display of Queen's thinking, tool calls, and results. Scrollable with j/k or arrow keys.
+- **Task Panel** — Task list with status icons (⏳ pending, 🔄 running, ✅ complete, ❌ failed), worker assignments.
+- **Status Bar** — Elapsed time, active worker count, completion status.
 
-Returns new tasks to add (or empty array → done).
+The TUI is automatically used when stdout is a TTY. Falls back to plain log output with `--plain` flag. After completion, waits for user keypress before exiting.
 
-### Provider Selection
+The bridge (`tui/bridge.go`) routes log output from the Queen into structured TUI messages, with message buffering for events that arrive before the TUI starts.
+
+## Provider Selection
+
 Configured via `waggle.json`:
 ```json
-{"queen": {"provider": "kimi"}}        // uses kimi CLI (free, no API key)
-{"queen": {"provider": "gemini"}}       // uses gemini CLI
-{"queen": {"provider": "claude-cli"}}   // uses claude CLI
-{"queen": {"provider": "anthropic"}}    // uses Anthropic API (needs key)
+{"queen": {"provider": "anthropic"}}   // Anthropic API (tool-use, needs ANTHROPIC_API_KEY)
+{"queen": {"provider": "openai"}}      // OpenAI API (tool-use, needs OPENAI_API_KEY)
+{"queen": {"provider": "gemini"}}      // Gemini API (tool-use, needs GEMINI_API_KEY)
+{"queen": {"provider": "codex"}}       // Codex CLI (tool-use via OpenAI-compatible API)
+{"queen": {"provider": "kimi"}}        // Kimi CLI (no tool-use, legacy mode)
+{"queen": {"provider": "claude-cli"}}  // Claude CLI (no tool-use, legacy mode)
+{"queen": {"provider": "opencode"}}    // OpenCode CLI (no tool-use, legacy mode)
 ```
-No provider = review/replan disabled, old exit-code-based behavior.
+No provider = review/replan disabled, legacy exit-code-based behavior.
+
+## Task Router
+
+`TaskRouter` maps task types to adapters. It initializes all routes from `workers.default_adapter` in the config. The Queen's `assign_task` tool uses the router to select which adapter spawns the worker for each task.
 
 ## Scope Constraints System
 
@@ -137,38 +190,11 @@ The `safety.Guard` is wired into all adapter constructors and enforced at spawn 
 - `IsReadOnly()` — prepends read-only warning to worker prompts when enabled
 - All adapter goroutines have `defer/recover` for panic safety
 
-## Task Graph
-
-The task system now includes **cycle detection** via DFS. When `parsePlanOutput()` parses LLM-generated tasks, it validates dependencies with `DetectCycles()` before accepting them. Cycles return an error like `"circular dependency detected: a -> b -> c -> a"`.
-
-## Adapters — Current State
-
-| Adapter | CLI | Non-interactive Command | Status |
-|---------|-----|------------------------|--------|
-| `kimi` | Kimi Code | `kimi --print --final-message-only -p "<prompt>"` | ✅ **Working, fast (~60s/task)** |
-| `opencode` | OpenCode | `opencode run "<prompt>"` | ✅ Working, slow (~2-3min/task) |
-| `gemini` | Gemini CLI | `echo "<prompt>" \| gemini` | 🔑 Installed, needs capacity |
-| `claude-code` | Claude Code | `claude -p "<prompt>"` | 🔑 Needs `/login` |
-| `codex` | Codex | `codex exec "<prompt>"` | 🔑 Needs auth |
-| `exec` | bash | `bash -c "<description>"` | ✅ Always available |
-
-## Data Flow
-
-1. **User** runs `waggle --adapter kimi run "Review this codebase"`
-2. **Queen.plan()** — Spawns one worker to decompose objective into JSON task array (with constraints + allowed_paths per task)
-3. **Queen.delegate()** — Assigns ready tasks (respecting deps, cycle-free) to workers up to `MaxParallel`, injects default scope constraints
-4. **Queen.monitor()** — Polls workers every 2s, logs every 10s, enforces timeout
-5. **Queen.review()** — Collects results; LLM evaluates quality (approved/rejected); handles failures/retries with error classification
-6. **Queen.replan()** — After all tasks complete, LLM checks if more work needed
-7. Loop back to delegate (new/requeued tasks) or finish
-8. **printReport()** — Dumps all task outputs as a final report
-
 ## Persistence Layer
 
 ```
 .hive/
-├── hive.db       # SQLite (WAL mode) — primary store
-└── log.jsonl     # Legacy append-only event log (parallel write)
+└── hive.db       # SQLite (WAL mode) — sole persistence store
 ```
 
 ### SQLite Schema
@@ -176,19 +202,21 @@ The task system now includes **cycle detection** via DFS. When `parsePlanOutput(
 - **events** — append-only event log indexed by session + type
 - **tasks** — full task state (status, worker_id, result JSON, result_data, retries, deps)
 - **blackboard** — persisted shared memory (key/value per session)
-- **kv** — general purpose key-value store
+- **kv** — general purpose key-value store (used for persisting agent conversation turns)
 
 ## CLI Commands
 
 ```bash
 waggle init                          # Create .hive/ and waggle.json
-waggle run "<objective>"              # Run with AI planning
-waggle --adapter kimi run "<obj>"     # Specify adapter
+waggle run "<objective>"              # Run with AI planning (TUI if TTY)
+waggle --adapter kimi run "<obj>"     # Specify worker adapter
 waggle --adapter exec --tasks f.json run "<obj>"  # Pre-defined tasks
 waggle --workers 8 run "<obj>"        # Set parallelism
+waggle --plain run "<obj>"            # Force plain log output (no TUI)
+waggle --legacy run "<obj>"           # Force legacy orchestration loop
 waggle status                         # Show current/last session
 waggle config                         # Show configuration
-waggle resume                         # Resume interrupted session
+waggle resume <session-id>            # Resume interrupted session
 ```
 
 ## Configuration (`waggle.json`)
@@ -196,10 +224,10 @@ waggle resume                         # Resume interrupted session
 ```json
 {
   "queen": {
-    "provider": "kimi",
-    "model": "claude-sonnet-4-20250514",
+    "provider": "codex",
+    "model": "gpt-5-nano-2025-08-07",
     "max_iterations": 50,
-    "plan_timeout": 600000000000,
+    "plan_timeout": 300000000000,
     "review_timeout": 120000000000,
     "compact_after_messages": 100
   },
@@ -207,7 +235,7 @@ waggle resume                         # Resume interrupted session
     "max_parallel": 4,
     "default_timeout": 600000000000,
     "max_retries": 2,
-    "default_adapter": "claude-code"
+    "default_adapter": "kimi"
   },
   "adapters": {
     "kimi": { "command": "kimi", "args": ["--print", "--final-message-only", "-p"] },
@@ -225,6 +253,17 @@ waggle resume                         # Resume interrupted session
 }
 ```
 
+## Adapters — Current State
+
+| Adapter | CLI | Non-interactive Command | Status |
+|---------|-----|------------------------|--------|
+| `kimi` | Kimi Code | `kimi --print --final-message-only -p "<prompt>"` | ✅ **Working, fast (~60s/task)** |
+| `opencode` | OpenCode | `opencode run "<prompt>"` | ✅ Working, slow (~2-3min/task) |
+| `gemini` | Gemini CLI | `echo "<prompt>" \| gemini` | 🔑 Installed, needs capacity |
+| `claude-code` | Claude Code | `claude -p "<prompt>"` | 🔑 Needs `/login` |
+| `codex` | Codex | `codex exec "<prompt>"` | ✅ Working |
+| `exec` | bash | `bash -c "<description>"` | ✅ Always available |
+
 ## What Was Tested End-to-End
 
 1. **exec adapter** — parallel shell tasks with dependencies (4 tasks, 2 waves) ✅
@@ -240,29 +279,26 @@ waggle resume                         # Resume interrupted session
 11. **Bus panic recovery** — panicking handlers caught, other handlers still execute, 5 tests ✅
 12. **LLM review + replan** — kimi as Queen's brain, approved 4 tasks, replan returned 0 new tasks ✅
 13. **Cycle detection** — DFS-based, 12 test cases, integrated into parsePlanOutput() ✅
+14. **Agent mode** — Queen as autonomous tool-using agent with Anthropic/OpenAI/Gemini providers ✅
+15. **TUI dashboard** — Real-time Bubble Tea display of Queen reasoning, tasks, workers ✅
+16. **Session resume** — Agent-mode conversation restored from SQLite kv store ✅
 
-## Known Test Failures
+## Known Issues
 
-- `TestErrorClassification/PanicError` — expects retry on panic but queen marks as failed (pre-existing)
-- `TestQueenRunWithResumedSession` — resume test has DB session lookup mismatch (pre-existing)
-
-## What Was NOT Built Yet
-
-- No unit tests for config, safety, compact modules
-- Context compaction exists but the LLM-backed summarizer is a stub
-- No CI/CD, no Makefile, no release process
-- The JSONL store is redundant now that SQLite exists
-- No OpenAI LLM provider (interface supports it, just needs implementation)
+- None currently — all tests passing.
 
 ## Dependencies
 
 - `modernc.org/sqlite` — pure Go SQLite driver (no CGO)
 - `github.com/anthropics/anthropic-sdk-go` — Anthropic API client
 - `github.com/urfave/cli/v3` — CLI framework
+- `github.com/charmbracelet/bubbletea` — TUI framework
+- `github.com/charmbracelet/lipgloss` — TUI styling
+- `golang.org/x/term` — TTY detection
 - Go 1.26+
 
 ## Repository
 
 - GitHub: https://github.com/HexSleeves/waggle
-- 17 commits on `main`
+- 41 commits on `main`
 - No branches, no CI, no releases

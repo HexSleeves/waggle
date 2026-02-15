@@ -1,6 +1,6 @@
 # Waggle — TODO
 
-> Prioritized next steps. Updated 2026-02-14.
+> Prioritized next steps. Updated 2026-02-15.
 
 ## P0 — Critical (data loss / correctness)
 
@@ -11,6 +11,10 @@
 - [x] **Wrap SQLite multi-statement ops in transactions** — `UpdateTaskStatus`, `UpdateTaskErrorType`, `IncrementTaskRetry` now use `BEGIN`/`COMMIT` with rollback. *(done 2026-02-15)*
 
 - [x] **Add context.Context to all DB methods** — All public `DB` methods now accept `ctx context.Context`. Uses `ExecContext`/`QueryContext`/`BeginTx` throughout. All callers updated. *(done 2026-02-15)*
+
+- [x] **Fix TaskRouter ignoring default_adapter** — `NewTaskRouter` was hardcoding `claude-code` for all task types. Now initializes routes from `workers.default_adapter` config. Agent mode `assign_task` tool now respects the configured adapter. *(done 2026-02-15)*
+
+- [x] **Fix TUI auto-closing on completion** — Bubble Tea exited immediately when the Queen finished because tick commands stopped being issued. Now keeps ticking so the user can read results and press any key to exit. *(done 2026-02-15)*
 
 ## P1 — High (reliability / usability)
 
@@ -26,7 +30,11 @@
 
 - [x] **Provider-agnostic LLM client** — `llm.Client` interface with Anthropic SDK and CLI adapter backends. Factory selects by `queen.provider` config. *(done 2026-02-14)*
 
-- [x] **Remove or deprecate JSONL store** — Removed entirely (see P0 item above). *(done 2026-02-15)*
+- [x] **Agent mode (Queen as tool-using LLM)** — `RunAgent()` loop where the Queen autonomously calls tools. 11 tool definitions. Supports Anthropic, OpenAI, Gemini providers. Conversation compaction at 80+ messages. *(done 2026-02-15)*
+
+- [x] **OpenAI and Gemini LLM providers** — `openai.go` and `gemini.go` with full tool-use support. Factory updated. *(done 2026-02-15)*
+
+- [x] **TUI dashboard** — Bubble Tea-based terminal UI with Queen panel (thinking/tools/results), task panel (status/workers), status bar. Auto-detects TTY, `--plain` flag for CI. Message buffering for pre-start events. *(done 2026-02-15)*
 
 - [x] **Fix pre-existing test failures** — Panics now classified as retryable (transient). Resume test fixed with correct session ID seeding. All tests green. *(done 2026-02-15)*
 
@@ -44,9 +52,9 @@
 
 - [ ] **Cap large worker output** — No limit on `result.Output` size. Truncate at configurable limit (e.g., 1MB).
 
-- [ ] **Add OpenAI LLM provider** — Interface supports it, just needs `openai.go` implementation in `internal/llm/`.
-
 - [ ] **Review rejection integration test** — Test that a rejected task actually gets re-queued with feedback and re-executed.
+
+- [ ] **TUI resume mode** — Wire TUI into `cmdResume` (currently only plain mode gets TUI).
 
 ## P3 — Low (polish / extensibility)
 
@@ -74,8 +82,8 @@
 
 ## Architectural Debt
 
-- The Queen uses the worker adapter for planning (spawns a "planner" worker). Consider using the Queen's own LLM client for planning too, which would be faster and avoid spawning a worker process.
+- The Queen uses the worker adapter for planning in legacy mode (spawns a "planner" worker). Agent mode avoids this by using the Queen's own LLM client.
 - The `compact.Context` is wired into the Queen but never read for decision-making. It's write-only.
 - The blackboard is both in-memory and persisted (SQLite). On resume, in-memory starts empty.
-- ~~The JSONL store is fully redundant with SQLite and should be removed.~~ *(removed 2026-02-15)*
-- The Queen's `model` config field is only used when provider is `anthropic`. CLI-based providers ignore it.
+- The Queen's `model` config field is only used when provider is `anthropic`, `openai`, or `gemini`. CLI-based providers ignore it.
+- `cmdResume` doesn't use the TUI yet (only plain mode).
