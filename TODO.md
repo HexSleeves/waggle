@@ -40,7 +40,7 @@
 
 - [ ] **Implement real session resume** — CLI now loads from SQLite, but needs end-to-end testing. Verify interrupted sessions actually resume correctly.
 
-- [ ] **Add `--quiet` / `--json` output modes** — Monitoring logs are noisy for CI/scripting. Add quiet mode (completions only) and JSON mode.
+- [x] **Add `--quiet` / `--json` output modes** — Monitoring logs are noisy for CI/scripting. Add quiet mode (completions only) and JSON mode.
 
 ## P2 — Medium (quality / testing)
 

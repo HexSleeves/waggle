@@ -17,7 +17,7 @@ type Program struct {
 	started     bool
 	buffer      []tea.Msg
 	quiet       bool        // Quiet mode: don't start TUI, print only essentials
-	objectiveCh chan string  // receives objective in interactive mode
+	objectiveCh chan string // receives objective in interactive mode
 }
 
 // NewProgram creates a TUI program with a pre-set objective.

@@ -1,285 +1,119 @@
-package adapter
+package queen
 
 import (
 	"context"
-	"os"
-	"path/filepath"
+	"fmt"
 	"sync"
-	"testing"
 	"time"
 
+	"github.com/exedev/waggle/internal/adapter"
 	"github.com/exedev/waggle/internal/task"
 	"github.com/exedev/waggle/internal/worker"
 )
 
-// TestAdapterRegistry tests the adapter registry functionality
-func TestAdapterRegistry(t *testing.T) {
-	registry := NewRegistry()
+// MockRegistry implements adapter.Registry functionality with configurable adapter availability
+type MockRegistry struct {
+	mu        sync.RWMutex
+	adapters  map[string]adapter.Adapter
+	available map[string]bool
+}
 
-	// Register mock adapters
-	registry.Register(&MockAdapter{name: "test1", available: true})
-	registry.Register(&MockAdapter{name: "test2", available: true})
-
-	// Test Get
-	a, ok := registry.Get("test1")
-	if !ok {
-		t.Fatal("expected to find test1 adapter")
-	}
-	if a.Name() != "test1" {
-		t.Errorf("expected name test1, got %s", a.Name())
-	}
-
-	// Test Available
-	avail := registry.Available()
-	if len(avail) != 2 {
-		t.Errorf("expected 2 available adapters, got %d", len(avail))
-	}
-
-	// Test WorkerFactory
-	factory := registry.WorkerFactory()
-	w, err := factory("test-worker", "test1")
-	if err != nil {
-		t.Fatalf("failed to create worker: %v", err)
-	}
-	if w.ID() != "test-worker" {
-		t.Errorf("expected worker ID test-worker, got %s", w.ID())
+// NewMockRegistry creates a new MockRegistry with no adapters registered
+func NewMockRegistry() *MockRegistry {
+	return &MockRegistry{
+		adapters:  make(map[string]adapter.Adapter),
+		available: make(map[string]bool),
 	}
 }
 
-// TestTaskRouter tests task routing functionality
-func TestTaskRouter(t *testing.T) {
-	registry := NewRegistry()
-	registry.Register(&MockAdapter{name: "claude-code"})
-	registry.Register(&MockAdapter{name: "codex"})
-
-	router := NewTaskRouter(registry, "claude-code")
-
-	// Test default routing
-	codeTask := &task.Task{Type: task.TypeCode}
-	route := router.Route(codeTask)
-	if route != "claude-code" {
-		t.Errorf("expected route claude-code, got %s", route)
-	}
-
-	// Test custom routing
-	router.SetRoute(task.TypeCode, "codex")
-	route = router.Route(codeTask)
-	if route != "codex" {
-		t.Errorf("expected custom route codex, got %s", route)
-	}
+// Register adds an adapter to the registry
+func (r *MockRegistry) Register(a adapter.Adapter) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.adapters[a.Name()] = a
+	// By default, adapters are available if they report as available
+	r.available[a.Name()] = a.Available()
 }
 
-// TestClaudeAdapter tests Claude adapter functionality
-func TestClaudeAdapter(t *testing.T) {
-	tempDir := t.TempDir()
-	adapter := NewClaudeAdapter("echo", []string{}, tempDir, nil)
-
-	if adapter.Name() != "claude-code" {
-		t.Errorf("expected name claude-code, got %s", adapter.Name())
-	}
-
-	if !adapter.Available() {
-		t.Error("expected adapter to be available with echo command")
-	}
-
-	worker := adapter.CreateWorker("test-worker")
-	if worker.Type() != "claude-code" {
-		t.Errorf("expected worker type claude-code, got %s", worker.Type())
-	}
+// Get retrieves an adapter by name
+func (r *MockRegistry) Get(name string) (adapter.Adapter, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	a, ok := r.adapters[name]
+	return a, ok
 }
 
-// TestCodexAdapter tests Codex adapter functionality
-func TestCodexAdapter(t *testing.T) {
-	tempDir := t.TempDir()
-	adapter := NewCodexAdapter("echo", []string{}, tempDir, nil)
-
-	if adapter.Name() != "codex" {
-		t.Errorf("expected name codex, got %s", adapter.Name())
-	}
-
-	if !adapter.Available() {
-		t.Error("expected adapter to be available with echo command")
-	}
-
-	worker := adapter.CreateWorker("test-worker")
-	if worker.Type() != "codex" {
-		t.Errorf("expected worker type codex, got %s", worker.Type())
-	}
-}
-
-// TestOpenCodeAdapter tests OpenCode adapter functionality
-func TestOpenCodeAdapter(t *testing.T) {
-	tempDir := t.TempDir()
-	adapter := NewOpenCodeAdapter("echo", []string{}, tempDir, nil)
-
-	if adapter.Name() != "opencode" {
-		t.Errorf("expected name opencode, got %s", adapter.Name())
-	}
-
-	if !adapter.Available() {
-		t.Error("expected adapter to be available with echo command")
-	}
-
-	worker := adapter.CreateWorker("test-worker")
-	if worker.Type() != "opencode" {
-		t.Errorf("expected worker type opencode, got %s", worker.Type())
-	}
-}
-
-// TestWorkerExecution tests actual worker execution with mock commands
-func TestWorkerExecution(t *testing.T) {
-	tests := []struct {
-		name     string
-		adapter  Adapter
-		taskType task.Type
-	}{
-		{"ClaudeWorker", NewClaudeAdapter("echo", []string{}, t.TempDir(), nil), task.TypeCode},
-		{"CodexWorker", NewCodexAdapter("echo", []string{}, t.TempDir(), nil), task.TypeResearch},
-		{"OpenCodeWorker", NewOpenCodeAdapter("echo", []string{}, t.TempDir(), nil), task.TypeTest},
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-			defer cancel()
-
-			worker := tt.adapter.CreateWorker("test-worker")
-
-			task := &task.Task{
-				ID:          "test-task",
-				Type:        tt.taskType,
-				Title:       "Test Task",
-				Description: "This is a test task",
-				Context:     map[string]string{"key": "value"},
-			}
-
-			err := worker.Spawn(ctx, task)
-			if err != nil {
-				t.Fatalf("failed to spawn worker: %v", err)
-			}
-
-			// Wait for completion
-			for i := 0; i < 10; i++ {
-				status := worker.Monitor()
-				if status == "complete" || status == "failed" {
-					break
-				}
-				time.Sleep(100 * time.Millisecond)
-			}
-
-			result := worker.Result()
-			if result == nil {
-				t.Fatal("expected result but got nil")
-			}
-
-			if !result.Success {
-				t.Errorf("expected success but got errors: %v", result.Errors)
-			}
-
-			output := worker.Output()
-			if output == "" {
-				t.Error("expected output but got empty string")
-			}
-		})
-	}
-}
-
-// TestWorkerKill tests worker termination
-func TestWorkerKill(t *testing.T) {
-	if testing.Short() {
-		t.Skip("Skipping slow test in short mode")
-	}
-
-	// Use a longer-running command to ensure it doesn't finish immediately
-	adapter := NewClaudeAdapter("sleep", []string{"5"}, t.TempDir(), nil)
-	worker := adapter.CreateWorker("test-worker")
-
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	task := &task.Task{
-		ID:          "test-task",
-		Type:        task.TypeCode,
-		Title:       "Long Running Task",
-		Description: "This task should run for a while",
-	}
-
-	err := worker.Spawn(ctx, task)
-	if err != nil {
-		t.Fatalf("failed to spawn worker: %v", err)
-	}
-
-	// Give it a moment to start
-	time.Sleep(500 * time.Millisecond)
-
-	// Kill the worker
-	err = worker.Kill()
-	if err != nil {
-		// Don't fail the test if the process already finished
-		t.Logf("worker kill result: %v", err)
-	}
-}
-
-// TestBuildPrompt tests the prompt building functionality
-func TestBuildPrompt(t *testing.T) {
-	task := &task.Task{
-		Title:        "Test Task",
-		Type:         task.TypeCode,
-		Description:  "This is a test description",
-		Context:      map[string]string{"env": "test", "debug": "true"},
-		AllowedPaths: []string{"/tmp", "/home/user"},
-	}
-
-	prompt := buildPrompt(task)
-
-	expectedParts := []string{
-		"Task: Test Task",
-		"Type: code",
-		"Description:\nThis is a test description",
-		"- env: test",
-		"- debug: true",
-		"Only modify files in: /tmp, /home/user",
-	}
-
-	for _, part := range expectedParts {
-		if !contains(prompt, part) {
-			t.Errorf("prompt missing expected part: %s\nActual prompt:\n%s", part, prompt)
+// Available returns a list of available adapter names
+func (r *MockRegistry) Available() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var names []string
+	for name, a := range r.adapters {
+		if r.available[name] && a.Available() {
+			names = append(names, name)
 		}
 	}
+	return names
 }
 
-// TestOpenCodeAdapterPathResolution tests OpenCode adapter path resolution
-func TestOpenCodeAdapterPathResolution(t *testing.T) {
-	tempDir := t.TempDir()
-	fakeOpenCode := filepath.Join(tempDir, "opencode")
+// SetAvailable configures whether an adapter is available
+func (r *MockRegistry) SetAvailable(name string, available bool) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.available[name] = available
+}
 
-	// Create a fake opencode executable
-	err := os.WriteFile(fakeOpenCode, []byte("#!/bin/bash\necho 'opencode output'"), 0755)
-	if err != nil {
-		t.Fatalf("failed to create fake opencode: %v", err)
-	}
+// IsAvailable checks if an adapter is configured as available
+func (r *MockRegistry) IsAvailable(name string) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return r.available[name]
+}
 
-	// Test with absolute path
-	adapter := NewOpenCodeAdapter(fakeOpenCode, []string{}, tempDir, nil)
-	if !adapter.Available() {
-		t.Error("expected adapter to be available with absolute path")
-	}
+// WorkerFactory returns a worker.Factory that creates workers from the registry
+func (r *MockRegistry) WorkerFactory() worker.Factory {
+	return func(id string, adapterName string) (worker.Bee, error) {
+		r.mu.RLock()
+		defer r.mu.RUnlock()
 
-	// Test with relative path - this might pass due to system PATH
-	adapter2 := NewOpenCodeAdapter("nonexistent-opencode-definitely-not-real", []string{}, tempDir, nil)
-	if adapter2.Available() {
-		t.Log("nonexistent command was available (likely in PATH), skipping this check")
+		a, ok := r.adapters[adapterName]
+		if !ok {
+			return nil, fmt.Errorf("adapter %q not registered", adapterName)
+		}
+		if !r.available[adapterName] {
+			return nil, fmt.Errorf("adapter %q not available", adapterName)
+		}
+		return a.CreateWorker(id), nil
 	}
 }
 
-// MockAdapter is a mock implementation for testing
+// AdapterNames returns all registered adapter names (for inspection)
+func (r *MockRegistry) AdapterNames() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	var names []string
+	for name := range r.adapters {
+		names = append(names, name)
+	}
+	return names
+}
+
+// Clear removes all adapters from the registry
+func (r *MockRegistry) Clear() {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.adapters = make(map[string]adapter.Adapter)
+	r.available = make(map[string]bool)
+}
+
+// MockAdapter is a configurable mock adapter for testing
 type MockAdapter struct {
 	name          string
 	available     bool
 	workerFactory func(id string) worker.Bee
 }
 
-// NewMockAdapter creates a new MockAdapter with the given name and availability
+// NewMockAdapter creates a new MockAdapter
 func NewMockAdapter(name string, available bool) *MockAdapter {
 	return &MockAdapter{
 		name:      name,
@@ -290,14 +124,17 @@ func NewMockAdapter(name string, available bool) *MockAdapter {
 	}
 }
 
+// Name returns the adapter name
 func (m *MockAdapter) Name() string {
 	return m.name
 }
 
+// Available returns whether the adapter is available
 func (m *MockAdapter) Available() bool {
 	return m.available
 }
 
+// CreateWorker creates a new worker.Bee
 func (m *MockAdapter) CreateWorker(id string) worker.Bee {
 	if m.workerFactory != nil {
 		return m.workerFactory(id)
@@ -313,43 +150,6 @@ func (m *MockAdapter) SetWorkerFactory(factory func(id string) worker.Bee) {
 // SetAvailable configures adapter availability
 func (m *MockAdapter) SetAvailable(available bool) {
 	m.available = available
-}
-
-// MockWorker is a basic mock worker implementation (kept for backward compatibility)
-type MockWorker struct {
-	id     string
-	typ    string
-	status worker.Status
-}
-
-func (m *MockWorker) ID() string {
-	return m.id
-}
-
-func (m *MockWorker) Type() string {
-	return m.typ
-}
-
-func (m *MockWorker) Spawn(ctx context.Context, t *task.Task) error {
-	m.status = worker.StatusComplete
-	return nil
-}
-
-func (m *MockWorker) Monitor() worker.Status {
-	return m.status
-}
-
-func (m *MockWorker) Result() *task.Result {
-	return &task.Result{Success: true}
-}
-
-func (m *MockWorker) Kill() error {
-	m.status = worker.StatusFailed
-	return nil
-}
-
-func (m *MockWorker) Output() string {
-	return "mock output"
 }
 
 // EnhancedMockBee is a configurable mock implementation of worker.Bee
@@ -620,6 +420,21 @@ func (m *EnhancedMockBee) WaitForStatus(status worker.Status, timeout time.Durat
 	}
 }
 
+// WaitForStatusCh blocks until the specified status is sent on statusCh or timeout
+func (m *EnhancedMockBee) WaitForStatusCh(status worker.Status, timeout time.Duration) bool {
+	deadline := time.After(timeout)
+	for {
+		select {
+		case <-deadline:
+			return false
+		case s := <-m.statusCh:
+			if s == status {
+				return true
+			}
+		}
+	}
+}
+
 // Reset resets the mock to its initial state
 func (m *EnhancedMockBee) Reset() {
 	m.mu.Lock()
@@ -682,17 +497,150 @@ func (m *EnhancedMockBee) SimulateTimeout() {
 	m.SetStatus(worker.StatusRunning)
 }
 
-// Helper function to check if a string contains a substring
-func contains(s, substr string) bool {
-	return len(s) >= len(substr) && (s == substr || len(substr) == 0 ||
-		(len(s) > len(substr) && indexOf(s, substr) >= 0))
+// MockBeeFactory creates EnhancedMockBee instances with preset behaviors
+type MockBeeFactory struct {
+	mu      sync.Mutex
+	bees    map[string]*EnhancedMockBee
+	counter int
 }
 
-func indexOf(s, substr string) int {
-	for i := 0; i <= len(s)-len(substr); i++ {
-		if s[i:i+len(substr)] == substr {
-			return i
+// NewMockBeeFactory creates a new MockBeeFactory
+func NewMockBeeFactory() *MockBeeFactory {
+	return &MockBeeFactory{
+		bees: make(map[string]*EnhancedMockBee),
+	}
+}
+
+// CreateBee creates a new EnhancedMockBee with the given behavior preset
+func (f *MockBeeFactory) CreateBee(id string, preset string) *EnhancedMockBee {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+
+	bee := NewEnhancedMockBee(id, "mock")
+
+	switch preset {
+	case "success":
+		bee.Succeed("Task completed successfully")
+	case "failure":
+		bee.Fail("Task failed")
+	case "error":
+		bee.SetSpawnError(fmt.Errorf("spawn error"))
+	case "slow":
+		bee.SetDelay(100 * time.Millisecond)
+		bee.Succeed("Task completed after delay")
+	case "stuck":
+		bee.SimulateStuck()
+	case "timeout":
+		bee.SimulateTimeout()
+	}
+
+	f.bees[id] = bee
+	return bee
+}
+
+// GetBee retrieves a previously created bee
+func (f *MockBeeFactory) GetBee(id string) (*EnhancedMockBee, bool) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	bee, ok := f.bees[id]
+	return bee, ok
+}
+
+// AllBees returns all created bees
+func (f *MockBeeFactory) AllBees() []*EnhancedMockBee {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var bees []*EnhancedMockBee
+	for _, bee := range f.bees {
+		bees = append(bees, bee)
+	}
+	return bees
+}
+
+// Reset clears all created bees
+func (f *MockBeeFactory) Reset() {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.bees = make(map[string]*EnhancedMockBee)
+	f.counter = 0
+}
+
+// CreateBeeWithID creates a bee with an auto-generated ID
+func (f *MockBeeFactory) CreateBeeWithID(preset string) *EnhancedMockBee {
+	f.mu.Lock()
+	f.counter++
+	id := fmt.Sprintf("mock-bee-%d", f.counter)
+	f.mu.Unlock()
+	return f.CreateBee(id, preset)
+}
+
+// MockCallTracker tracks calls to mocks for verification
+type MockCallTracker struct {
+	mu    sync.Mutex
+	calls []MockCall
+}
+
+// MockCall represents a single mock method call
+type MockCall struct {
+	Method    string
+	Args      map[string]interface{}
+	Timestamp time.Time
+}
+
+// NewMockCallTracker creates a new call tracker
+func NewMockCallTracker() *MockCallTracker {
+	return &MockCallTracker{
+		calls: make([]MockCall, 0),
+	}
+}
+
+// Record records a method call
+func (t *MockCallTracker) Record(method string, args map[string]interface{}) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.calls = append(t.calls, MockCall{
+		Method:    method,
+		Args:      args,
+		Timestamp: time.Now(),
+	})
+}
+
+// GetCalls returns all recorded calls to a specific method
+func (t *MockCallTracker) GetCalls(method string) []MockCall {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+
+	var result []MockCall
+	for _, call := range t.calls {
+		if call.Method == method {
+			result = append(result, call)
 		}
 	}
-	return -1
+	return result
+}
+
+// WasMethodCalled returns true if a method was called at least once
+func (t *MockCallTracker) WasMethodCalled(method string) bool {
+	return len(t.GetCalls(method)) > 0
+}
+
+// CallCount returns the number of times a method was called
+func (t *MockCallTracker) CallCount(method string) int {
+	return len(t.GetCalls(method))
+}
+
+// Reset clears all recorded calls
+func (t *MockCallTracker) Reset() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.calls = make([]MockCall, 0)
+}
+
+// AllCalls returns all recorded calls
+func (t *MockCallTracker) AllCalls() []MockCall {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	result := make([]MockCall, len(t.calls))
+	copy(result, t.calls)
+	return result
 }

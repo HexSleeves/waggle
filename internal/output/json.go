@@ -36,57 +36,57 @@ const (
 
 // TaskEvent represents a task-related event.
 type TaskEvent struct {
-	TaskID      string        `json:"task_id"`
-	Title       string        `json:"title,omitempty"`
-	Type        string        `json:"type,omitempty"`
-	Status      string        `json:"status"`
-	WorkerID    string        `json:"worker_id,omitempty"`
-	ParentID    string        `json:"parent_id,omitempty"`
-	Priority    int           `json:"priority,omitempty"`
-	Description string        `json:"description,omitempty"`
-	DependsOn   []string      `json:"depends_on,omitempty"`
-	MaxRetries  int           `json:"max_retries,omitempty"`
-	RetryCount  int           `json:"retry_count,omitempty"`
-	LastError   string        `json:"last_error,omitempty"`
-	CreatedAt   *time.Time    `json:"created_at,omitempty"`
-	StartedAt   *time.Time    `json:"started_at,omitempty"`
-	CompletedAt *time.Time    `json:"completed_at,omitempty"`
-	Result      *TaskResult   `json:"result,omitempty"`
+	TaskID      string      `json:"task_id"`
+	Title       string      `json:"title,omitempty"`
+	Type        string      `json:"type,omitempty"`
+	Status      string      `json:"status"`
+	WorkerID    string      `json:"worker_id,omitempty"`
+	ParentID    string      `json:"parent_id,omitempty"`
+	Priority    int         `json:"priority,omitempty"`
+	Description string      `json:"description,omitempty"`
+	DependsOn   []string    `json:"depends_on,omitempty"`
+	MaxRetries  int         `json:"max_retries,omitempty"`
+	RetryCount  int         `json:"retry_count,omitempty"`
+	LastError   string      `json:"last_error,omitempty"`
+	CreatedAt   *time.Time  `json:"created_at,omitempty"`
+	StartedAt   *time.Time  `json:"started_at,omitempty"`
+	CompletedAt *time.Time  `json:"completed_at,omitempty"`
+	Result      *TaskResult `json:"result,omitempty"`
 }
 
 // TaskResult represents the result of a completed task.
 type TaskResult struct {
-	Success   bool              `json:"success"`
-	Output    string            `json:"output,omitempty"`
-	Errors    []string          `json:"errors,omitempty"`
-	Artifacts map[string]string `json:"artifacts,omitempty"`
+	Success   bool               `json:"success"`
+	Output    string             `json:"output,omitempty"`
+	Errors    []string           `json:"errors,omitempty"`
+	Artifacts map[string]string  `json:"artifacts,omitempty"`
 	Metrics   map[string]float64 `json:"metrics,omitempty"`
 }
 
 // SessionSummary represents the final session summary.
 type SessionSummary struct {
-	SessionID      string            `json:"session_id"`
-	Objective      string            `json:"objective"`
-	Status         string            `json:"status"`
-	TotalTasks     int               `json:"total_tasks"`
-	CompletedTasks int               `json:"completed_tasks"`
-	FailedTasks    int               `json:"failed_tasks"`
-	Iterations     int               `json:"iterations"`
-	Duration       time.Duration     `json:"duration_ms"`
-	Tasks          []TaskEvent       `json:"tasks,omitempty"`
+	SessionID      string        `json:"session_id"`
+	Objective      string        `json:"objective"`
+	Status         string        `json:"status"`
+	TotalTasks     int           `json:"total_tasks"`
+	CompletedTasks int           `json:"completed_tasks"`
+	FailedTasks    int           `json:"failed_tasks"`
+	Iterations     int           `json:"iterations"`
+	Duration       time.Duration `json:"duration_ms"`
+	Tasks          []TaskEvent   `json:"tasks,omitempty"`
 }
 
 // JSONEvent is the wrapper for all JSON output events.
 type JSONEvent struct {
-	Type      EventType     `json:"type"`
-	Timestamp time.Time     `json:"timestamp"`
-	SessionID string        `json:"session_id,omitempty"`
-	Task      *TaskEvent    `json:"task,omitempty"`
-	Worker    *WorkerEvent  `json:"worker,omitempty"`
+	Type      EventType       `json:"type"`
+	Timestamp time.Time       `json:"timestamp"`
+	SessionID string          `json:"session_id,omitempty"`
+	Task      *TaskEvent      `json:"task,omitempty"`
+	Worker    *WorkerEvent    `json:"worker,omitempty"`
 	Session   *SessionSummary `json:"session,omitempty"`
-	Error     *ErrorEvent   `json:"error,omitempty"`
-	Message   string        `json:"message,omitempty"`
-	Data      interface{}   `json:"data,omitempty"`
+	Error     *ErrorEvent     `json:"error,omitempty"`
+	Message   string          `json:"message,omitempty"`
+	Data      interface{}     `json:"data,omitempty"`
 }
 
 // WorkerEvent represents a worker-related event.
@@ -174,7 +174,7 @@ func (jw *JSONWriter) WriteSessionEnd(summary SessionSummary) error {
 // WriteTaskCreated emits a task created event.
 func (jw *JSONWriter) WriteTaskCreated(t *task.Task) error {
 	taskEvent := taskToEvent(t, jw.maxOutput)
-	
+
 	jw.mu.Lock()
 	jw.taskEvents = append(jw.taskEvents, *taskEvent)
 	jw.mu.Unlock()
@@ -202,7 +202,7 @@ func (jw *JSONWriter) WriteTaskUpdated(taskID, status, workerID string) error {
 // WriteTaskCompleted emits a task completion event.
 func (jw *JSONWriter) WriteTaskCompleted(t *task.Task) error {
 	taskEvent := taskToEvent(t, jw.maxOutput)
-	
+
 	// Update stored task event
 	jw.mu.Lock()
 	for i, te := range jw.taskEvents {
@@ -280,7 +280,7 @@ func (jw *JSONWriter) WriteQueenDecision(phase, message string, data map[string]
 func (jw *JSONWriter) GetTaskEvents() []TaskEvent {
 	jw.mu.Lock()
 	defer jw.mu.Unlock()
-	
+
 	result := make([]TaskEvent, len(jw.taskEvents))
 	copy(result, jw.taskEvents)
 	return result

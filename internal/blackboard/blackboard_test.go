@@ -1,6 +1,7 @@
 package blackboard
 
 import (
+	"fmt"
 	"strings"
 	"sync"
 	"testing"
@@ -467,4 +468,310 @@ func TestEntryStruct(t *testing.T) {
 	if len(entry.Tags) != 2 {
 		t.Error("Tags length mismatch")
 	}
+}
+
+func TestBlackboardDeepCopyRead(t *testing.T) {
+	bb := New(nil)
+
+	originalValue := map[string]int{"count": 42}
+	entry := &Entry{
+		Key:      "test",
+		Value:    originalValue,
+		PostedBy: "worker-1",
+	}
+	bb.Post(entry)
+
+	retrieved, ok := bb.Read("test")
+	if !ok {
+		t.Fatal("Expected to find entry")
+	}
+
+	if retrieved != bb.entries["test"] {
+		t.Error("Read returns pointer to internal entry")
+	}
+
+	retrieved.Value.(map[string]int)["count"] = 100
+	if originalValue["count"] != 100 {
+		t.Error("Value should be shared (not deep copied)")
+	}
+}
+
+func TestBlackboardDeepCopyAll(t *testing.T) {
+	bb := New(nil)
+
+	originalValue := map[string]int{"count": 42}
+	entry := &Entry{
+		Key:      "test",
+		Value:    originalValue,
+		PostedBy: "worker-1",
+	}
+	bb.Post(entry)
+
+	all := bb.All()
+	allEntry := all["test"]
+
+	if allEntry != bb.entries["test"] {
+		t.Error("All() returns different Entry pointers")
+	}
+
+	allEntry.Value.(map[string]int)["count"] = 100
+
+	retrieved, _ := bb.Read("test")
+	if retrieved.Value.(map[string]int)["count"] != 100 {
+		t.Error("All() should return entries that share the same underlying data")
+	}
+}
+
+func TestBlackboardDeepCopyReadByTag(t *testing.T) {
+	bb := New(nil)
+
+	entry := &Entry{
+		Key:      "test",
+		Value:    "original",
+		PostedBy: "worker-1",
+		Tags:     []string{"tag1"},
+	}
+	bb.Post(entry)
+
+	entries := bb.ReadByTag("tag1")
+	if len(entries) != 1 {
+		t.Fatalf("Expected 1 entry, got %d", len(entries))
+	}
+
+	if entries[0] != bb.entries["test"] {
+		t.Error("ReadByTag returns different Entry pointers")
+	}
+}
+
+func TestBlackboardDeepCopyReadByWorker(t *testing.T) {
+	bb := New(nil)
+
+	entry := &Entry{
+		Key:      "test",
+		Value:    "original",
+		PostedBy: "worker-1",
+	}
+	bb.Post(entry)
+
+	entries := bb.ReadByWorker("worker-1")
+	if len(entries) != 1 {
+		t.Fatalf("Expected 1 entry, got %d", len(entries))
+	}
+
+	if entries[0] != bb.entries["test"] {
+		t.Error("ReadByWorker returns different Entry pointers")
+	}
+}
+
+func TestBlackboardDeepCopyReadByTask(t *testing.T) {
+	bb := New(nil)
+
+	entry := &Entry{
+		Key:      "test",
+		Value:    "original",
+		PostedBy: "worker-1",
+		TaskID:   "task-1",
+	}
+	bb.Post(entry)
+
+	entries := bb.ReadByTask("task-1")
+	if len(entries) != 1 {
+		t.Fatalf("Expected 1 entry, got %d", len(entries))
+	}
+
+	if entries[0] != bb.entries["test"] {
+		t.Error("ReadByTask returns different Entry pointers")
+	}
+}
+
+func TestBlackboardConcurrentPostAndRead(t *testing.T) {
+	bb := New(nil)
+	var wg sync.WaitGroup
+	numGoroutines := 50
+
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			key := fmt.Sprintf("key-%d", id)
+			bb.Post(&Entry{
+				Key:      key,
+				Value:    id,
+				PostedBy: "worker",
+			})
+		}(i)
+	}
+
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			key := fmt.Sprintf("key-%d", id)
+			bb.Read(key)
+			bb.Keys()
+			bb.All()
+			bb.ReadByWorker("worker")
+			bb.ReadByTag("tag")
+			bb.ReadByTask("task")
+		}(i)
+	}
+
+	wg.Wait()
+
+	if len(bb.Keys()) != numGoroutines {
+		t.Errorf("Expected %d keys, got %d", numGoroutines, len(bb.Keys()))
+	}
+}
+
+func TestBlackboardConcurrentPostAndHistory(t *testing.T) {
+	bb := New(nil)
+	var wg sync.WaitGroup
+	numGoroutines := 100
+
+	for i := 0; i < numGoroutines; i++ {
+		wg.Add(1)
+		go func(id int) {
+			defer wg.Done()
+			bb.Post(&Entry{
+				Key:      fmt.Sprintf("key-%d", id%10),
+				Value:    id,
+				PostedBy: "worker",
+			})
+		}(i)
+	}
+
+	wg.Wait()
+
+	history := bb.History()
+	if len(history) != numGoroutines {
+		t.Errorf("Expected %d history entries, got %d", numGoroutines, len(history))
+	}
+}
+
+func TestBlackboardConcurrentMixedOperations(t *testing.T) {
+	bb := New(nil)
+	var wg sync.WaitGroup
+	stop := make(chan struct{})
+
+	go func() {
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+				bb.Post(&Entry{
+					Key:      fmt.Sprintf("key-%d", i%20),
+					Value:    i,
+					PostedBy: "worker",
+					Tags:     []string{fmt.Sprintf("tag-%d", i%5)},
+				})
+			}
+		}
+	}()
+
+	go func() {
+		for i := 0; ; i++ {
+			select {
+			case <-stop:
+				return
+			default:
+				bb.Read(fmt.Sprintf("key-%d", i%20))
+				bb.Keys()
+				bb.All()
+				bb.History()
+				bb.ReadByWorker("worker")
+				bb.ReadByTag(fmt.Sprintf("tag-%d", i%5))
+			}
+		}
+	}()
+
+	time.Sleep(100 * time.Millisecond)
+	close(stop)
+	wg.Wait()
+}
+
+func TestBlackboardResultPersistence(t *testing.T) {
+	bb := New(nil)
+
+	workerResults := []*Entry{
+		{Key: "task-1-result", Value: `{"status": "success", "output": "Task 1 completed"}`, PostedBy: "worker-1", TaskID: "task-1", Tags: []string{"result"}},
+		{Key: "task-2-result", Value: `{"status": "success", "output": "Task 2 completed"}`, PostedBy: "worker-2", TaskID: "task-2", Tags: []string{"result"}},
+		{Key: "task-3-result", Value: `{"status": "failed", "error": "Task 3 failed"}`, PostedBy: "worker-3", TaskID: "task-3", Tags: []string{"result", "failed"}},
+	}
+
+	for _, e := range workerResults {
+		bb.Post(e)
+	}
+
+	allEntries := bb.All()
+	if len(allEntries) != 3 {
+		t.Errorf("Expected 3 entries, got %d", len(allEntries))
+	}
+
+	for _, e := range workerResults {
+		key := e.Key
+		retrieved, ok := bb.Read(key)
+		if !ok {
+			t.Errorf("Expected to find entry %s", key)
+		}
+		if retrieved.Value != e.Value {
+			t.Errorf("Expected value %s, got %s", e.Value, retrieved.Value)
+		}
+		if retrieved.PostedBy != e.PostedBy {
+			t.Errorf("Expected PostedBy %s, got %s", e.PostedBy, retrieved.PostedBy)
+		}
+		if retrieved.TaskID != e.TaskID {
+			t.Errorf("Expected TaskID %s, got %s", e.TaskID, retrieved.TaskID)
+		}
+	}
+}
+
+func TestBlackboardResultPersistenceAcrossSessionResume(t *testing.T) {
+	bb1 := New(nil)
+
+	originalResults := []*Entry{
+		{Key: "task-1", Value: "result-1", PostedBy: "worker-1", TaskID: "task-1"},
+		{Key: "task-2", Value: "result-2", PostedBy: "worker-2", TaskID: "task-2"},
+		{Key: "task-3", Value: "result-3", PostedBy: "worker-1", TaskID: "task-3"},
+	}
+
+	for _, e := range originalResults {
+		bb1.Post(e)
+	}
+
+	entriesForPersistence := bb1.All()
+	historyForPersistence := bb1.History()
+
+	bb2 := New(nil)
+
+	for _, e := range entriesForPersistence {
+		bb2.Post(&Entry{
+			Key:      e.Key,
+			Value:    e.Value,
+			PostedBy: e.PostedBy,
+			TaskID:   e.TaskID,
+			Tags:     e.Tags,
+		})
+	}
+
+	if len(bb2.Keys()) != len(originalResults) {
+		t.Errorf("Expected %d keys after resume, got %d", len(originalResults), len(bb2.Keys()))
+	}
+
+	for _, orig := range originalResults {
+		retrieved, ok := bb2.Read(orig.Key)
+		if !ok {
+			t.Errorf("Expected to find entry %s after resume", orig.Key)
+		}
+		if retrieved.Value != orig.Value {
+			t.Errorf("Expected value %s, got %s", orig.Value, retrieved.Value)
+		}
+	}
+
+	resumeHistory := bb2.History()
+	if len(resumeHistory) != len(originalResults) {
+		t.Errorf("Expected %d history entries, got %d", len(originalResults), len(resumeHistory))
+	}
+
+	_ = historyForPersistence
 }

@@ -16,14 +16,14 @@ import (
 
 // mockBee is a test implementation of the Bee interface
 type mockBee struct {
-	id        string
-	beeType   string
-	status    atomic.Value
-	result    *task.Result
-	spawnErr  error
+	id         string
+	beeType    string
+	status     atomic.Value
+	result     *task.Result
+	spawnErr   error
 	killCalled atomic.Bool
-	mu        sync.Mutex
-	output    string
+	mu         sync.Mutex
+	output     string
 }
 
 func newMockBee(id, beeType string) *mockBee {
@@ -50,7 +50,7 @@ func (m *mockBee) Spawn(ctx context.Context, t *task.Task) error {
 		return m.spawnErr
 	}
 	m.status.Store(StatusRunning)
-	
+
 	// Simulate async work completion
 	go func() {
 		time.Sleep(10 * time.Millisecond)
@@ -61,7 +61,7 @@ func (m *mockBee) Spawn(ctx context.Context, t *task.Task) error {
 		}
 		m.mu.Unlock()
 	}()
-	
+
 	return nil
 }
 
@@ -184,12 +184,12 @@ func TestPoolSpawn(t *testing.T) {
 
 func TestPoolSpawnMaxParallel(t *testing.T) {
 	var spawnedCount atomic.Int32
-	
+
 	factory := func(id, adapter string) (Bee, error) {
 		spawnedCount.Add(1)
 		return newMockBee(id, adapter), nil
 	}
-	
+
 	// Limit to 2 concurrent workers
 	pool := NewPool(2, factory, nil)
 
@@ -307,7 +307,7 @@ func TestPoolActive(t *testing.T) {
 
 	// Wait for completion
 	time.Sleep(50 * time.Millisecond)
-	
+
 	// Worker should be complete, not active
 	active = pool.Active()
 	if len(active) != 0 {
@@ -567,6 +567,168 @@ func TestWorkerPanicRecovery(t *testing.T) {
 	}
 	if !foundPanic {
 		t.Errorf("Expected 'panic:' in errors, got: %v", result.Errors)
+	}
+}
+
+func TestResultSchemaConformance(t *testing.T) {
+	tests := []struct {
+		name          string
+		configureMock func() Bee
+		wantSuccess   bool
+		wantOutput    string
+		wantErrors    int
+	}{
+		{
+			name: "successful result with output",
+			configureMock: func() Bee {
+				m := newMockBee("test-1", "test-adapter")
+				m.result = &task.Result{Success: true, Output: "task completed successfully"}
+				m.status.Store(StatusComplete)
+				return m
+			},
+			wantSuccess: true,
+			wantOutput:  "task completed successfully",
+			wantErrors:  0,
+		},
+		{
+			name: "failed result with errors",
+			configureMock: func() Bee {
+				m := newMockBee("test-2", "test-adapter")
+				m.result = &task.Result{Success: false, Output: "error occurred", Errors: []string{"error 1", "error 2"}}
+				m.status.Store(StatusFailed)
+				return m
+			},
+			wantSuccess: false,
+			wantOutput:  "error occurred",
+			wantErrors:  2,
+		},
+		{
+			name: "result with artifacts",
+			configureMock: func() Bee {
+				m := newMockBee("test-3", "test-adapter")
+				m.result = &task.Result{
+					Success:   true,
+					Output:    "files created",
+					Artifacts: map[string]string{"file1.txt": "/path/to/file1.txt"},
+				}
+				m.status.Store(StatusComplete)
+				return m
+			},
+			wantSuccess: true,
+			wantOutput:  "files created",
+			wantErrors:  0,
+		},
+		{
+			name: "result with metrics",
+			configureMock: func() Bee {
+				m := newMockBee("test-4", "test-adapter")
+				m.result = &task.Result{
+					Success: true,
+					Output:  "benchmark complete",
+					Metrics: map[string]float64{"duration_ms": 150.5, "tokens": 500},
+				}
+				m.status.Store(StatusComplete)
+				return m
+			},
+			wantSuccess: true,
+			wantOutput:  "benchmark complete",
+			wantErrors:  0,
+		},
+		{
+			name: "result with empty output",
+			configureMock: func() Bee {
+				m := newMockBee("test-5", "test-adapter")
+				m.result = &task.Result{Success: true, Output: ""}
+				m.status.Store(StatusComplete)
+				return m
+			},
+			wantSuccess: true,
+			wantOutput:  "",
+			wantErrors:  0,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			bee := tt.configureMock()
+
+			result := bee.Result()
+			if result == nil {
+				t.Fatal("Result() returned nil")
+			}
+
+			if result.Success != tt.wantSuccess {
+				t.Errorf("Result.Success = %v, want %v", result.Success, tt.wantSuccess)
+			}
+
+			if result.Output != tt.wantOutput {
+				t.Errorf("Result.Output = %q, want %q", result.Output, tt.wantOutput)
+			}
+
+			if len(result.Errors) != tt.wantErrors {
+				t.Errorf("Result.Errors length = %d, want %d", len(result.Errors), tt.wantErrors)
+			}
+
+			if result.Artifacts != nil {
+				if _, ok := interface{}(result.Artifacts).(map[string]string); !ok {
+					t.Error("Result.Artifacts should be map[string]string")
+				}
+			}
+
+			if result.Metrics != nil {
+				if _, ok := interface{}(result.Metrics).(map[string]float64); !ok {
+					t.Error("Result.Metrics should be map[string]float64")
+				}
+			}
+		})
+	}
+}
+
+func TestResultSchemaFieldTypes(t *testing.T) {
+	m := newMockBee("test", "test-adapter")
+	m.result = &task.Result{
+		Success:   true,
+		Output:    "test output",
+		Errors:    []string{"error1"},
+		Artifacts: map[string]string{"key": "value"},
+		Metrics:   map[string]float64{"count": 10.5},
+	}
+	m.status.Store(StatusComplete)
+
+	result := m.Result()
+
+	if _, ok := interface{}(result.Success).(bool); !ok {
+		t.Error("Result.Success should be bool")
+	}
+
+	if _, ok := interface{}(result.Output).(string); !ok {
+		t.Error("Result.Output should be string")
+	}
+
+	if _, ok := interface{}(result.Errors).([]string); !ok {
+		t.Error("Result.Errors should be []string")
+	}
+
+	if _, ok := interface{}(result.Artifacts).(map[string]string); !ok {
+		t.Error("Result.Artifacts should be map[string]string")
+	}
+
+	if _, ok := interface{}(result.Metrics).(map[string]float64); !ok {
+		t.Error("Result.Metrics should be map[string]float64")
+	}
+}
+
+func TestWorkerOutputMatchesResultOutput(t *testing.T) {
+	m := newMockBee("test-1", "test-adapter")
+	m.result = &task.Result{Success: true, Output: "hello world"}
+	m.output = "hello world"
+	m.status.Store(StatusComplete)
+
+	result := m.Result()
+	output := m.Output()
+
+	if result.Output != output {
+		t.Errorf("Result.Output = %q, worker.Output() = %q - should match", result.Output, output)
 	}
 }
 

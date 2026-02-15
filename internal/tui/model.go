@@ -9,24 +9,24 @@ import (
 )
 
 const (
-	maxQueenLines  = 200
-	maxLogLines    = 100
-	tickInterval   = time.Second
+	maxQueenLines = 200
+	maxLogLines   = 100
+	tickInterval  = time.Second
 )
 
 type viewMode int
 
 const (
-	viewQueen  viewMode = iota
+	viewQueen viewMode = iota
 	viewWorker
 )
 
 type inputState int
 
 const (
-	inputNone     inputState = iota // objective already provided
-	inputWaiting                    // waiting for user to type objective
-	inputRunning                    // objective submitted, queen running
+	inputNone    inputState = iota // objective already provided
+	inputWaiting                   // waiting for user to type objective
+	inputRunning                   // objective submitted, queen running
 )
 
 // TaskInfo tracks task state for display.

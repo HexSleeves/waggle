@@ -130,9 +130,9 @@ func (q *Queen) RunAgent(ctx context.Context, objective string) error {
 
 		// If no tool calls, the Queen is done talking
 		if resp.StopReason == "end_turn" {
-		if !q.quiet {
-			q.logger.Println("👑 Queen ended conversation without calling complete()")
-		}
+			if !q.quiet {
+				q.logger.Println("👑 Queen ended conversation without calling complete()")
+			}
 			q.db.UpdateSessionStatus(ctx, q.sessionID, "done")
 			q.printReport()
 			return nil
@@ -198,16 +198,16 @@ func (q *Queen) RunAgent(ctx context.Context, objective string) error {
 		// Handle terminal tools
 		if completed {
 			if !q.quiet {
-			q.logger.Println("✅ Queen declared objective complete!")
-		}
+				q.logger.Println("✅ Queen declared objective complete!")
+			}
 			q.db.UpdateSessionStatus(ctx, q.sessionID, "done")
 			q.printReport()
 			return nil
 		}
 		if failReason != "" {
 			if !q.quiet {
-			q.logger.Printf("❌ Queen declared failure: %s", failReason)
-		}
+				q.logger.Printf("❌ Queen declared failure: %s", failReason)
+			}
 			q.db.UpdateSessionStatus(ctx, q.sessionID, "failed")
 			return fmt.Errorf("queen declared failure: %s", failReason)
 		}

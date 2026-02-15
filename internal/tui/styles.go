@@ -63,7 +63,7 @@ var (
 			Foreground(colorGreen)
 
 	workerOutputStyle = lipgloss.NewStyle().
-			Foreground(colorWhite)
+				Foreground(colorWhite)
 
 	// Task status styles
 	statusStyles = map[string]lipgloss.Style{
