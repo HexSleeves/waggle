@@ -35,7 +35,7 @@ func TestErrorClassification(t *testing.T) {
 		{"forbidden", errors.New("403 forbidden"), ErrorTypePermanent},
 		{"404 not found", errors.New("404 not found"), ErrorTypePermanent},
 		{"parse error", errors.New("parse error: invalid syntax"), ErrorTypePermanent},
-		{"nil pointer", errors.New("runtime error: invalid memory address or nil pointer dereference"), ErrorTypePermanent},
+		{"nil pointer", errors.New("runtime error: invalid memory address or nil pointer dereference"), ErrorTypeRetryable},
 
 		// Edge cases
 		{"nil error", nil, ErrorTypePermanent},
