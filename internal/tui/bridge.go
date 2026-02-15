@@ -16,6 +16,7 @@ type Program struct {
 	mu      sync.Mutex
 	started bool
 	buffer  []tea.Msg
+	quiet   bool // Quiet mode: don't start TUI, print only essentials
 }
 
 // NewProgram creates a TUI program.
@@ -25,10 +26,24 @@ func NewProgram(objective string, maxTurns int) *Program {
 	return &Program{program: p}
 }
 
-// Run starts the TUI (blocking). Replays buffered messages first.
-func (p *Program) Run() (tea.Model, error) {
-	// Mark as started and flush buffer
+// SetQuiet enables quiet mode where the TUI is not started and only
+// essential messages (task completions/failures) are printed.
+func (p *Program) SetQuiet(quiet bool) {
 	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.quiet = quiet
+}
+
+// Run starts the TUI (blocking). Replays buffered messages first.
+// In quiet mode, returns immediately without starting the TUI.
+func (p *Program) Run() (tea.Model, error) {
+	p.mu.Lock()
+	if p.quiet {
+		p.mu.Unlock()
+		// In quiet mode, don't start TUI at all
+		return Model{done: true, success: true}, nil
+	}
+	// Mark as started and flush buffer
 	p.started = true
 	buffered := make([]tea.Msg, len(p.buffer))
 	copy(buffered, p.buffer)
@@ -46,8 +61,22 @@ func (p *Program) Run() (tea.Model, error) {
 }
 
 // Send sends a message to the TUI. Buffers if the program hasn't started yet.
+// In quiet mode, essential messages are printed directly to stdout.
 func (p *Program) Send(msg tea.Msg) {
 	p.mu.Lock()
+	if p.quiet {
+		p.mu.Unlock()
+		// In quiet mode, only print essential completion/failure messages
+		switch m := msg.(type) {
+		case DoneMsg:
+			if m.Error != "" {
+				fmt.Printf("❌ Failed: %s\n", m.Error)
+			} else {
+				fmt.Printf("✅ %s\n", m.Summary)
+			}
+		}
+		return
+	}
 	if !p.started {
 		p.buffer = append(p.buffer, msg)
 		p.mu.Unlock()

@@ -21,12 +21,16 @@ import (
 func (q *Queen) RunAgent(ctx context.Context, objective string) error {
 	toolClient, ok := q.llm.(llm.ToolClient)
 	if !ok {
-		q.logger.Println("⚠ LLM provider does not support tool use, falling back to legacy loop")
+		if !q.quiet {
+			q.logger.Println("⚠ LLM provider does not support tool use, falling back to legacy loop")
+		}
 		return q.Run(ctx, objective)
 	}
 
 	q.objective = objective
-	q.logger.Printf("🐝 Waggle Agent Mode | Objective: %s", objective)
+	if !q.quiet {
+		q.logger.Printf("🐝 Waggle Agent Mode | Objective: %s", objective)
+	}
 
 	// Preflight: verify adapters
 	available := q.registry.Available()
@@ -35,7 +39,9 @@ func (q *Queen) RunAgent(ctx context.Context, objective string) error {
 	}
 	defaultAdapter := q.cfg.Workers.DefaultAdapter
 	if a, ok := q.registry.Get(defaultAdapter); !ok || !a.Available() {
-		q.logger.Printf("⚠ Default adapter %q not available, falling back to: %s", defaultAdapter, available[0])
+		if !q.quiet {
+			q.logger.Printf("⚠ Default adapter %q not available, falling back to: %s", defaultAdapter, available[0])
+		}
 	}
 	// Filter exec from display unless it's the chosen adapter
 	displayAdapters := make([]string, 0, len(available))
@@ -44,12 +50,16 @@ func (q *Queen) RunAgent(ctx context.Context, objective string) error {
 			displayAdapters = append(displayAdapters, name)
 		}
 	}
-	q.logger.Printf("✓ Using adapter: %s | Available: %v", defaultAdapter, displayAdapters)
+	if !q.quiet {
+		q.logger.Printf("✓ Using adapter: %s | Available: %v", defaultAdapter, displayAdapters)
+	}
 
 	// Create DB session
 	q.sessionID = fmt.Sprintf("session-%d", time.Now().UnixNano())
 	if err := q.db.CreateSession(ctx, q.sessionID, objective); err != nil {
-		q.logger.Printf("⚠ DB: failed to create session: %v", err)
+		if !q.quiet {
+			q.logger.Printf("⚠ DB: failed to create session: %v", err)
+		}
 	}
 
 	// Build initial conversation
@@ -73,19 +83,25 @@ func (q *Queen) RunAgent(ctx context.Context, objective string) error {
 	for turn := 0; turn < maxTurns; turn++ {
 		select {
 		case <-ctx.Done():
-			q.logger.Println("⛔ Context cancelled, shutting down")
+			if !q.quiet {
+				q.logger.Println("⛔ Context cancelled, shutting down")
+			}
 			q.pool.KillAll()
 			return ctx.Err()
 		default:
 		}
 
-		q.logger.Printf("\n━━━ Agent Turn %d/%d ━━━", turn+1, maxTurns)
+		if !q.quiet {
+			q.logger.Printf("\n━━━ Agent Turn %d/%d ━━━", turn+1, maxTurns)
+		}
 
 		// Call LLM with tools
 		resp, err := toolClient.ChatWithTools(ctx, systemPrompt, messages, tools)
 		if err != nil {
 			// If the error is transient, retry once
-			q.logger.Printf("⚠ LLM call failed: %v, retrying...", err)
+			if !q.quiet {
+				q.logger.Printf("⚠ LLM call failed: %v, retrying...", err)
+			}
 			time.Sleep(2 * time.Second)
 			resp, err = toolClient.ChatWithTools(ctx, systemPrompt, messages, tools)
 			if err != nil {
@@ -102,7 +118,9 @@ func (q *Queen) RunAgent(ctx context.Context, objective string) error {
 		// Log any text output from the Queen
 		for _, block := range resp.Content {
 			if block.Type == "text" && block.Text != "" {
-				q.logger.Printf("👑 Queen: %s", block.Text)
+				if !q.quiet {
+					q.logger.Printf("👑 Queen: %s", block.Text)
+				}
 			}
 		}
 
@@ -112,7 +130,9 @@ func (q *Queen) RunAgent(ctx context.Context, objective string) error {
 
 		// If no tool calls, the Queen is done talking
 		if resp.StopReason == "end_turn" {
+		if !q.quiet {
 			q.logger.Println("👑 Queen ended conversation without calling complete()")
+		}
 			q.db.UpdateSessionStatus(ctx, q.sessionID, "done")
 			q.printReport()
 			return nil
@@ -129,21 +149,27 @@ func (q *Queen) RunAgent(ctx context.Context, objective string) error {
 			}
 
 			tc := block.ToolCall
-			q.logger.Printf("  🔧 Tool: %s", tc.Name)
+			if !q.quiet {
+				q.logger.Printf("  🔧 Tool: %s", tc.Name)
+			}
 
 			result, toolErr := q.executeTool(ctx, tc)
 			isError := toolErr != nil
 			content := result
 			if isError {
 				content = toolErr.Error()
-				q.logger.Printf("  ⚠ Tool error: %s", content)
+				if !q.quiet {
+					q.logger.Printf("  ⚠ Tool error: %s", content)
+				}
 			} else {
 				// Log truncated result
 				preview := content
 				if len(preview) > 200 {
 					preview = preview[:200] + "..."
 				}
-				q.logger.Printf("  ✓ Result: %s", preview)
+				if !q.quiet {
+					q.logger.Printf("  ✓ Result: %s", preview)
+				}
 			}
 
 			toolResults = append(toolResults, llm.ToolResult{
@@ -171,13 +197,17 @@ func (q *Queen) RunAgent(ctx context.Context, objective string) error {
 
 		// Handle terminal tools
 		if completed {
+			if !q.quiet {
 			q.logger.Println("✅ Queen declared objective complete!")
+		}
 			q.db.UpdateSessionStatus(ctx, q.sessionID, "done")
 			q.printReport()
 			return nil
 		}
 		if failReason != "" {
+			if !q.quiet {
 			q.logger.Printf("❌ Queen declared failure: %s", failReason)
+		}
 			q.db.UpdateSessionStatus(ctx, q.sessionID, "failed")
 			return fmt.Errorf("queen declared failure: %s", failReason)
 		}
@@ -203,7 +233,9 @@ func (q *Queen) RunAgentResume(ctx context.Context, sessionID string) error {
 	messages, err := q.loadConversation(ctx, sessionID)
 	if err != nil || len(messages) == 0 {
 		// Can't restore conversation — just re-run with the same objective
-		q.logger.Println("⚠ Could not restore conversation, restarting agent loop")
+		if !q.quiet {
+			q.logger.Println("⚠ Could not restore conversation, restarting agent loop")
+		}
 		return q.RunAgent(ctx, objective)
 	}
 
@@ -212,7 +244,9 @@ func (q *Queen) RunAgentResume(ctx context.Context, sessionID string) error {
 		return q.Run(ctx, objective)
 	}
 
-	q.logger.Printf("🔄 Resuming agent session %s with %d messages", sessionID, len(messages))
+	if !q.quiet {
+		q.logger.Printf("🔄 Resuming agent session %s with %d messages", sessionID, len(messages))
+	}
 
 	// Inject a status update so the Queen knows where things stand
 	statusJSON, _ := handleGetStatus(ctx, q, nil)
@@ -249,7 +283,9 @@ func (q *Queen) RunAgentResume(ctx context.Context, sessionID string) error {
 
 		for _, block := range resp.Content {
 			if block.Type == "text" && block.Text != "" {
-				q.logger.Printf("👑 Queen: %s", block.Text)
+				if !q.quiet {
+					q.logger.Printf("👑 Queen: %s", block.Text)
+				}
 			}
 		}
 
@@ -414,7 +450,9 @@ func (q *Queen) compactMessages(messages []llm.ToolMessage) []llm.ToolMessage {
 	})
 	compacted = append(compacted, messages[middleEnd:]...)
 
-	q.logger.Printf("📦 Compacted conversation: %d → %d messages", len(messages), len(compacted))
+	if !q.quiet {
+		q.logger.Printf("📦 Compacted conversation: %d → %d messages", len(messages), len(compacted))
+	}
 	return compacted
 }
 

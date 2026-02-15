@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/urfave/cli/v3"
 )
@@ -57,6 +58,37 @@ func newApp() *cli.Command {
 				Aliases: []string{"v"},
 				Usage:   "Verbose logging",
 			},
+			&cli.BoolFlag{
+				Name:  "quiet",
+				Usage: "Suppress all output (mutually exclusive with --json and --plain)",
+			},
+			&cli.BoolFlag{
+				Name:  "json",
+				Usage: "Output in JSON format (mutually exclusive with --quiet and --plain)",
+			},
+		},
+		Before: func(ctx context.Context, cmd *cli.Command) (context.Context, error) {
+			// Validate mutual exclusivity of output format flags
+			quiet := cmd.Bool("quiet")
+			json := cmd.Bool("json")
+			plain := cmd.Bool("plain")
+
+			flagCount := 0
+			if quiet {
+				flagCount++
+			}
+			if json {
+				flagCount++
+			}
+			if plain {
+				flagCount++
+			}
+
+			if flagCount > 1 {
+				return ctx, fmt.Errorf("flags --quiet, --json, and --plain are mutually exclusive")
+			}
+
+			return ctx, nil
 		},
 		Commands: []*cli.Command{
 			{

@@ -23,6 +23,32 @@ type Config struct {
 
 	// Safety settings
 	Safety SafetyConfig `json:"safety"`
+
+	// Output mode settings (set via CLI flags, not persisted to config file)
+	Output OutputConfig `json:"-"`
+}
+
+// OutputConfig holds output format preferences set via CLI flags.
+// These are runtime-only settings (not persisted to waggle.json).
+type OutputConfig struct {
+	Quiet bool `json:"-"` // Suppress all output
+	JSON  bool `json:"-"` // Output in JSON format
+	Plain bool `json:"-"` // Plain output (no TUI)
+}
+
+// IsQuiet returns true if quiet mode is enabled.
+func (c *Config) IsQuiet() bool {
+	return c.Output.Quiet
+}
+
+// IsJSON returns true if JSON output mode is enabled.
+func (c *Config) IsJSON() bool {
+	return c.Output.JSON
+}
+
+// IsPlain returns true if plain output mode is enabled (no TUI).
+func (c *Config) IsPlain() bool {
+	return c.Output.Plain
 }
 
 type QueenConfig struct {

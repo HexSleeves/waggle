@@ -41,6 +41,11 @@ func loadConfigFromCtx(ctx context.Context, cmd *cli.Command) *config.Config {
 		cfg.Workers.MaxParallel = maxWorkers
 	}
 
+	// Propagate output mode flags from CLI
+	cfg.Output.Quiet = cmd.Bool("quiet")
+	cfg.Output.JSON = cmd.Bool("json")
+	cfg.Output.Plain = cmd.Bool("plain")
+
 	return cfg
 }
 

@@ -59,6 +59,7 @@ type Queen struct {
 	llm llm.Client // LLM client for AI-backed review/replan (nil = disabled)
 
 	suppressReport bool // TUI mode: don't print report to stdout
+	quiet          bool // Quiet mode: only print completions/failures
 
 	// For tracking worker->task assignments
 	assignments  map[string]string // workerID -> taskID
@@ -357,7 +358,7 @@ func (q *Queen) Run(ctx context.Context, objective string) error {
 		default:
 		}
 
-		q.logger.Printf("\n━━━ Iteration %d | Phase: %s ━━━", q.iteration+1, q.phase)
+		q.logVerbose("\n━━━ Iteration %d | Phase: %s ━━━", q.iteration+1, q.phase)
 
 		switch q.phase {
 		case PhasePlan:
@@ -418,7 +419,7 @@ func (q *Queen) Run(ctx context.Context, objective string) error {
 
 		// Compact context if needed
 		if q.ctx.NeedsCompaction() {
-			q.logger.Println("📦 Compacting context...")
+			q.logVerbose("📦 Compacting context...")
 			q.ctx.Compact(compact.DefaultSummarizer)
 		}
 	}
@@ -428,13 +429,13 @@ func (q *Queen) Run(ctx context.Context, objective string) error {
 
 // plan decomposes the objective into tasks
 func (q *Queen) plan(ctx context.Context) error {
-	q.logger.Println("📋 Planning phase...")
+	q.logVerbose("📋 Planning phase...")
 
 	// Check if we already have tasks from a resumed session
 	existing := q.tasks.All()
 	if len(existing) > 0 {
 		ready := q.tasks.Ready()
-		q.logger.Printf("  Resuming: %d total tasks, %d ready", len(existing), len(ready))
+		q.logVerbose("  Resuming: %d total tasks, %d ready", len(existing), len(ready))
 		return nil
 	}
 
@@ -447,7 +448,7 @@ func (q *Queen) plan(ctx context.Context) error {
 				Priority: int(t.Priority), Title: t.Title, Description: t.Description,
 				MaxRetries: t.MaxRetries, DependsOn: strings.Join(t.DependsOn, ","),
 			})
-			q.logger.Printf("  📌 Task: [%s] %s", t.Type, t.Title)
+			q.logVerbose("  📌 Task: [%s] %s", t.Type, t.Title)
 		}
 		q.pendingTasks = nil
 		return nil
@@ -456,7 +457,7 @@ func (q *Queen) plan(ctx context.Context) error {
 	// For non-AI adapters (exec), create a single direct task from the objective
 	adapterName := q.router.Route(&task.Task{Type: task.TypeGeneric})
 	if adapterName == "exec" {
-		q.logger.Println("  Using exec adapter — treating objective as single task")
+		q.logVerbose("  Using exec adapter — treating objective as single task")
 		t := &task.Task{
 			ID:          fmt.Sprintf("task-%d", time.Now().UnixNano()),
 			Type:        task.TypeGeneric,
@@ -534,11 +535,11 @@ func (q *Queen) plan(ctx context.Context) error {
 
 // delegate assigns ready tasks to workers
 func (q *Queen) delegate(ctx context.Context) error {
-	q.logger.Println("📤 Delegation phase...")
+	q.logVerbose("📤 Delegation phase...")
 
 	ready := q.tasks.Ready()
 	if len(ready) == 0 {
-		q.logger.Println("  No tasks ready (all have unmet dependencies)")
+		q.logVerbose("  No tasks ready (all have unmet dependencies)")
 		return nil
 	}
 
@@ -549,13 +550,13 @@ func (q *Queen) delegate(ctx context.Context) error {
 
 	for _, t := range ready {
 		if q.pool.ActiveCount() >= q.cfg.Workers.MaxParallel {
-			q.logger.Printf("  ⏸ Max parallel workers reached, queuing remaining")
+			q.logVerbose("  ⏸ Max parallel workers reached, queuing remaining")
 			break
 		}
 
 		adapterName := q.router.Route(t)
 		if adapterName == "" {
-			q.logger.Printf("  ⚠ No adapter for task %s, skipping", t.ID)
+			q.logVerbose("  ⚠ No adapter for task %s, skipping", t.ID)
 			continue
 		}
 
@@ -569,7 +570,7 @@ func (q *Queen) delegate(ctx context.Context) error {
 
 		bee, err := q.pool.Spawn(ctx, t, adapterName)
 		if err != nil {
-			q.logger.Printf("  ⚠ Failed to spawn worker for %s: %v", t.ID, err)
+			q.logVerbose("  ⚠ Failed to spawn worker for %s: %v", t.ID, err)
 			continue
 		}
 
@@ -583,7 +584,7 @@ func (q *Queen) delegate(ctx context.Context) error {
 		q.db.UpdateTaskStatus(ctx, q.sessionID, t.ID, "running")
 		q.db.UpdateTaskWorker(ctx, q.sessionID, t.ID, bee.ID())
 
-		q.logger.Printf("  🐝 Assigned [%s] %s -> %s (%s)", t.Type, t.Title, bee.ID(), adapterName)
+		q.logVerbose("  🐝 Assigned [%s] %s -> %s (%s)", t.Type, t.Title, bee.ID(), adapterName)
 	}
 
 	return nil
@@ -591,7 +592,7 @@ func (q *Queen) delegate(ctx context.Context) error {
 
 // monitor watches running workers until all complete or fail
 func (q *Queen) monitor(ctx context.Context) error {
-	q.logger.Println("👁 Monitoring phase...")
+	q.logVerbose("👁 Monitoring phase...")
 
 	pollInterval := 2 * time.Second
 	timeout := q.cfg.Workers.DefaultTimeout
@@ -606,19 +607,19 @@ func (q *Queen) monitor(ctx context.Context) error {
 		}
 
 		if time.Now().After(deadline) {
-			q.logger.Println("  ⏰ Monitoring timeout reached, killing stuck workers")
+			q.logVerbose("  ⏰ Monitoring timeout reached, killing stuck workers")
 			q.pool.KillAll()
 			return nil
 		}
 
 		active := q.pool.Active()
 		if len(active) == 0 {
-			q.logger.Println("  ✓ All workers finished")
+			q.logVerbose("  ✓ All workers finished")
 			return nil
 		}
 
 		if pollCount%5 == 0 { // Log every 10s instead of every 2s
-			q.logger.Printf("  ⏳ %d workers active...", len(active))
+			q.logVerbose("  ⏳ %d workers active...", len(active))
 		}
 		pollCount++
 
@@ -628,7 +629,7 @@ func (q *Queen) monitor(ctx context.Context) error {
 
 // review examines completed work, handles failures
 func (q *Queen) review(ctx context.Context) (bool, error) {
-	q.logger.Println("🔍 Review phase...")
+	q.logVerbose("🔍 Review phase...")
 
 	// Process results from assignments
 	q.mu.RLock()
@@ -678,12 +679,12 @@ func (q *Queen) review(ctx context.Context) (bool, error) {
 				if q.llm != nil && t != nil {
 					verdict, err := q.reviewWithLLM(ctx, taskID, t, result)
 					if err != nil {
-						q.logger.Printf("  ⚠ LLM review failed: %v (accepting result)", err)
+						q.logVerbose("  ⚠ LLM review failed: %v (accepting result)", err)
 					} else if !verdict.Approved {
-						q.logger.Printf("  🔙 LLM rejected task %s: %s", taskID, verdict.Reason)
+						q.logVerbose("  🔙 LLM rejected task %s: %s", taskID, verdict.Reason)
 						if len(verdict.Suggestions) > 0 {
 							for _, s := range verdict.Suggestions {
-								q.logger.Printf("     💡 %s", s)
+								q.logVerbose("     💡 %s", s)
 							}
 						}
 						// Re-queue with suggestions appended to description
@@ -695,12 +696,12 @@ func (q *Queen) review(ctx context.Context) (bool, error) {
 							}
 							q.tasks.UpdateStatus(taskID, task.StatusPending)
 							q.db.UpdateTaskStatus(ctx, q.sessionID, taskID, "pending")
-							q.logger.Printf("  🔄 Re-queued task %s (attempt %d/%d)", taskID, t.RetryCount, t.MaxRetries)
+							q.logVerbose("  🔄 Re-queued task %s (attempt %d/%d)", taskID, t.RetryCount, t.MaxRetries)
 							continue
 						}
-						q.logger.Printf("  💀 Task %s rejected but max retries reached, accepting", taskID)
+						q.logVerbose("  💀 Task %s rejected but max retries reached, accepting", taskID)
 					} else {
-						q.logger.Printf("  ✓ LLM approved task %s", taskID)
+						q.logVerbose("  ✓ LLM approved task %s", taskID)
 					}
 				}
 
@@ -733,7 +734,7 @@ func (q *Queen) review(ctx context.Context) (bool, error) {
 		if q.llm != nil {
 			newTasks, err := q.replanWithLLM(ctx)
 			if err != nil {
-				q.logger.Printf("  ⚠ LLM replan failed: %v (finishing)", err)
+				q.logVerbose("  ⚠ LLM replan failed: %v (finishing)", err)
 			} else if len(newTasks) > 0 {
 				for _, t := range newTasks {
 					q.tasks.Add(t)
@@ -742,7 +743,7 @@ func (q *Queen) review(ctx context.Context) (bool, error) {
 						Priority: int(t.Priority), Title: t.Title, Description: t.Description,
 						MaxRetries: t.MaxRetries, DependsOn: strings.Join(t.DependsOn, ","),
 					})
-					q.logger.Printf("  📌 New task from replan: [%s] %s", t.Type, t.Title)
+					q.logVerbose("  📌 New task from replan: [%s] %s", t.Type, t.Title)
 				}
 				return false, nil // More work to do
 			}
@@ -761,7 +762,7 @@ func (q *Queen) review(ctx context.Context) (bool, error) {
 	if q.pool.ActiveCount() == 0 && len(ready) == 0 && !q.tasks.AllComplete() {
 		failed := q.tasks.Failed()
 		if len(failed) > 0 {
-			q.logger.Printf("  💀 %d tasks failed with no recovery possible", len(failed))
+			q.logVerbose("  💀 %d tasks failed with no recovery possible", len(failed))
 			return false, fmt.Errorf("%d tasks failed", len(failed))
 		}
 	}
@@ -1035,6 +1036,18 @@ func (q *Queen) SetLogger(logger *log.Logger) {
 // SuppressReport prevents printReport from writing to stdout (for TUI mode).
 func (q *Queen) SuppressReport() {
 	q.suppressReport = true
+}
+
+// SetQuiet enables quiet mode where only task completions/failures are shown.
+func (q *Queen) SetQuiet(quiet bool) {
+	q.quiet = quiet
+}
+
+// logVerbose logs a message only if not in quiet mode.
+func (q *Queen) logVerbose(format string, v ...interface{}) {
+	if !q.quiet {
+		q.logger.Printf(format, v...)
+	}
 }
 
 // Bus returns the Queen's message bus (used by TUI to subscribe to events).
