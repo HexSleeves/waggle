@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"fmt"
+	"io"
 	"os/exec"
 	"strings"
 	"sync"
@@ -108,9 +109,11 @@ func (w *CodexWorker) Spawn(ctx context.Context, t *task.Task) error {
 		w.cmd.Dir = w.adapter.workDir
 	}
 
-	var stdout, stderr bytes.Buffer
-	w.cmd.Stdout = &stdout
-	w.cmd.Stderr = &stderr
+	// Stream output live to w.output for TUI display
+	var stdoutBuf, stderrBuf bytes.Buffer
+	stream := newStreamWriter(&w.mu, &w.output)
+	w.cmd.Stdout = io.MultiWriter(&stdoutBuf, stream)
+	w.cmd.Stderr = io.MultiWriter(&stderrBuf, stream)
 
 	w.status = worker.StatusRunning
 
@@ -135,15 +138,8 @@ func (w *CodexWorker) Spawn(ctx context.Context, t *task.Task) error {
 		w.mu.Lock()
 		defer w.mu.Unlock()
 
-		w.output.WriteString(stdout.String())
-		if stderr.Len() > 0 {
-			w.output.WriteString("\n[STDERR]\n")
-			w.output.WriteString(stderr.String())
-		}
-
 		if err != nil {
 			w.status = worker.StatusFailed
-			// Classify error for retry decisions
 			errType := errors.ClassifyErrorWithExitCode(err, getExitCode(err))
 			errMsg := err.Error()
 			if errType == errors.ErrorTypeRetryable {
@@ -151,14 +147,14 @@ func (w *CodexWorker) Spawn(ctx context.Context, t *task.Task) error {
 			}
 			w.result = &task.Result{
 				Success: false,
-				Output:  stdout.String(),
-				Errors:  []string{errMsg, stderr.String()},
+				Output:  stdoutBuf.String(),
+				Errors:  []string{errMsg, stderrBuf.String()},
 			}
 		} else {
 			w.status = worker.StatusComplete
 			w.result = &task.Result{
 				Success: true,
-				Output:  stdout.String(),
+				Output:  stdoutBuf.String(),
 			}
 		}
 	}()

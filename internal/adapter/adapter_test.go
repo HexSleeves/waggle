@@ -235,7 +235,8 @@ func TestBuildPrompt(t *testing.T) {
 		"Task: Test Task",
 		"Type: code",
 		"Description:\nThis is a test description",
-		"Context:\n- env: test\n- debug: true",
+		"- env: test",
+		"- debug: true",
 		"Only modify files in: /tmp, /home/user",
 	}
 
