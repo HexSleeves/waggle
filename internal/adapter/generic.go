@@ -39,12 +39,12 @@ type CLIAdapter struct {
 
 // CLIAdapterConfig holds the configuration for creating a CLIAdapter.
 type CLIAdapterConfig struct {
-	Name       string
-	Command    string
-	Args       []string
-	WorkDir    string
-	Guard      *safety.Guard
-	Mode       PromptMode
+	Name    string
+	Command string
+	Args    []string
+	WorkDir string
+	Guard   *safety.Guard
+	Mode    PromptMode
 	// FallbackPaths are checked if the command isn't on PATH.
 	FallbackPaths []string
 }

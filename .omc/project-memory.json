@@ -79,6 +79,74 @@
       ]
     }
   },
-  "hotPaths": [],
+  "hotPaths": [
+    {
+      "path": "",
+      "accessCount": 4,
+      "lastAccessed": 1771132724234,
+      "type": "directory"
+    },
+    {
+      "path": "README.md",
+      "accessCount": 2,
+      "lastAccessed": 1771132719601,
+      "type": "file"
+    },
+    {
+      "path": "TODO.md",
+      "accessCount": 2,
+      "lastAccessed": 1771132733521,
+      "type": "file"
+    },
+    {
+      "path": "waggle.json",
+      "accessCount": 2,
+      "lastAccessed": 1771132733524,
+      "type": "file"
+    },
+    {
+      "path": "internal/task/task.go",
+      "accessCount": 1,
+      "lastAccessed": 1771132728131,
+      "type": "file"
+    },
+    {
+      "path": "cmd/waggle/commands.go",
+      "accessCount": 1,
+      "lastAccessed": 1771132728138,
+      "type": "file"
+    },
+    {
+      "path": "internal/state/db.go",
+      "accessCount": 1,
+      "lastAccessed": 1771132731762,
+      "type": "file"
+    },
+    {
+      "path": "internal/config/config.go",
+      "accessCount": 1,
+      "lastAccessed": 1771132733533,
+      "type": "file"
+    },
+    {
+      "path": "go.mod",
+      "accessCount": 1,
+      "lastAccessed": 1771132733534,
+      "type": "file"
+    },
+    {
+      "path": "CONTEXT.md",
+      "accessCount": 1,
+      "lastAccessed": 1771132735219,
+      "type": "file"
+    },
+    {
+      "path": "internal/queen/agent.go",
+      "accessCount": 1,
+      "lastAccessed": 1771132742545,
+      "type": "file"
+    }
+  ],
   "userDirectives": []
+}[]
 }
