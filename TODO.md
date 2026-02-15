@@ -1,57 +1,80 @@
 # Waggle — TODO
 
-> Prioritized next steps. Updated 2026-02-15.
+> Prioritized next steps for the next agent. Updated 2026-02-15.
 
-## Recently Completed
+## What's Done (don't redo these)
 
-- [x] **Reduce adapter boilerplate** — Extracted `CLIAdapter` + `CLIWorker` in `generic.go` with 3 prompt modes. Each adapter is now 23-29 lines. 1249 → 471 lines (62% reduction). *(done 2026-02-15)*
-- [x] **GitHub Actions CI** — Runs fmt-check + vet + test (with race detector) + build on every push/PR to main. *(done 2026-02-15)*
-- [x] **Per-worker timeout with kill** — `Pool.Spawn` wraps context with `WithTimeout` when task has `Timeout > 0`. Process killed on deadline. Bus event published. *(done 2026-02-15)*
-- [x] **Cap worker output** — `streamWriter` caps at `workers.max_output_size` (default 1MB). Truncation marker appended. *(done 2026-02-15)*
-- [x] **Tests for config, safety, compact** — 46 new tests (1048 lines) covering all three previously untested packages. *(done 2026-02-15)*
-- [x] **Queen god-object refactor** — Split `queen.go` into `delegate.go`, `planner.go`, `failure.go`, `reporter.go`. *(upstream 2026-02-15)*
-- [x] **Backoff jitter fix** — Was a no-op, now uses actual `rand.Float64()`. *(upstream 2026-02-15)*
-- [x] **DFS slice aliasing fix** — Cycle detection path now properly copied to avoid corruption. *(upstream 2026-02-15)*
-- [x] **Unchecked DB errors** — `InsertTask`, `UpdateTaskStatus`, `UpdateTaskWorker` returns now checked and logged. *(upstream 2026-02-15)*
-- [x] **Goroutine leak in timeout monitor** — Now selects on both parent and child context. *(upstream 2026-02-15)*
-- [x] **Unbounded blackboard history** — Capped at 10,000 entries. `Clear()` resets history too. *(upstream 2026-02-15)*
-- [x] **Task backoff** — `RetryAfter` field on Task, `Ready()` respects it. *(upstream 2026-02-15)*
+- [x] Core orchestration: Plan→Delegate→Monitor→Review loop + Agent mode (tool-using LLM)
+- [x] 6 CLI adapters (claude, kimi, codex, opencode, gemini, exec) via shared `CLIAdapter`
+- [x] TUI dashboard with Queen/worker panel switching, live streaming output, scroll
+- [x] Interactive TUI mode (start without objective, prompt in TUI)
+- [x] Per-worker timeout with kill (context.WithTimeout in Pool.Spawn)
+- [x] Worker output capped at 1MB (configurable `workers.max_output_size`)
+- [x] Parallel task execution (planning prompt + review→delegate shortcut)
+- [x] Task retry with jittered exponential backoff (`RetryAfter` field)
+- [x] Blackboard history capped at 10k entries
+- [x] GitHub Actions CI (fmt-check + vet + test + build)
+- [x] Justfile for build/test/run commands
+- [x] Queen god-object split into delegate.go, planner.go, failure.go, reporter.go
+- [x] Comprehensive test suite: 12,600 lines, 30 test files, all passing
 
-## P1 — High (reliability / usability)
+## P1 — High (next up)
 
-- [ ] **Implement real session resume** — CLI loads from SQLite but needs end-to-end testing. Verify interrupted sessions actually resume correctly with task state + conversation history.
+### 1. Session Resume End-to-End
+The `waggle resume <session-id>` command exists but hasn't been validated end-to-end. Test:
+- Start a run, interrupt it (Ctrl+C), resume it
+- Verify task state is restored from SQLite
+- Verify completed tasks aren't re-run
+- Verify agent mode conversation history is restored from kv store
+- Files: `cmd/waggle/commands.go` (cmdResume), `internal/queen/queen.go` (ResumeSession)
 
-- [ ] **TUI resume mode** — Wire TUI into `cmdResume` (currently only plain mode gets TUI).
+### 2. TUI Resume Mode
+`cmdResume` currently only works with plain output. Wire TUI into resume path:
+- Use same `runWithTUI` pattern from `commands.go`
+- Files: `cmd/waggle/commands.go`
 
-- [ ] **Adapter health check on startup** — Verify chosen adapter can run a trivial prompt before planning. Fail fast instead of failing on first task.
+### 3. Adapter Health Check on Startup
+Before planning, verify the chosen adapter can actually run. Currently if `claude` isn't logged in, the first task fails after a long planning phase.
+- Add `HealthCheck()` to `CLIAdapter` that runs a trivial command (e.g., `claude -p "hi"`)
+- Call it before `Run()`/`RunAgent()` starts
+- Files: `internal/adapter/generic.go`, `internal/queen/queen.go`
 
-## P2 — Medium (quality / testing)
+## P2 — Medium
 
-- [ ] **Add unit tests for queen orchestrator** — Test Plan→Delegate→Monitor→Review loop with mock Bee. Test agent mode tool dispatch.
+### 4. `waggle sessions` Command
+List all past sessions with objective, status, task counts, timestamps.
+- Query `sessions` table in SQLite
+- Files: `cmd/waggle/` (new command), `internal/state/db.go` (new query)
 
-- [ ] **Review rejection integration test** — Test that a rejected task actually gets re-queued with feedback and re-executed.
+### 5. `waggle logs` Command
+Stream or tail event log for a session.
+- Query `events` table filtered by session_id
+- Files: `cmd/waggle/` (new command), `internal/state/db.go` (new query)
 
-- [ ] **Add `waggle logs` command** — Stream or tail event log for a session from SQLite.
+### 6. Review Rejection Integration Test
+Test that a rejected task actually gets re-queued with feedback and re-executed by a new worker.
+- Use exec adapter with a script that fails first time, succeeds second
+- File: `internal/queen/orchestrator_test.go`
 
-- [ ] **Add `waggle sessions` command** — List all past sessions with objective, status, task counts.
+## P3 — Low
 
-## P3 — Low (polish / extensibility)
-
-- [ ] **Publish binary releases** — GoReleaser or GH Actions workflow for linux/mac/arm64 binaries.
-
-- [ ] **Support mixed adapters per task type** — Allow config like `"code": "kimi", "test": "exec"` so coding tasks use AI while test tasks just run `go test`.
-
-- [ ] **Add `--dry-run` flag** — Run planning only, show task graph, don't execute.
-
-- [ ] **LLM-backed context summarizer** — Replace `compact.DefaultSummarizer` (extractive) with one that calls the Queen's LLM.
-
-- [ ] **Add progress bar / ETA** — Show `[3/5 tasks complete, ~2 min remaining]` in TUI.
-
-- [ ] **Task dependency visualization** — Show DAG structure in TUI or as `dot` graph export.
+- [ ] **Binary releases** — GoReleaser or GH Actions for linux/mac/arm64
+- [ ] **Mixed adapters per task type** — e.g., `"code": "kimi", "test": "exec"`
+- [ ] **`--dry-run` flag** — Show planned task graph without executing
+- [ ] **LLM-backed context summarizer** — Replace `compact.DefaultSummarizer`
+- [ ] **Progress bar / ETA in TUI** — `[3/5 tasks, ~2 min remaining]`
+- [ ] **Task dependency DAG visualization** — TUI or `dot` export
 
 ## Architectural Debt
 
-- The Queen uses the worker adapter for planning in legacy mode (spawns a "planner" worker). Agent mode avoids this.
-- The `compact.Context` is wired into the Queen but never read for decision-making. It's write-only.
-- The blackboard is both in-memory and persisted (SQLite). On resume, in-memory starts empty.
-- `cmdResume` doesn't use the TUI yet (only plain mode).
+- Legacy mode uses the worker adapter for planning (spawns a "planner" worker). Agent mode avoids this.
+- `compact.Context` is write-only — wired into Queen but never read for decisions.
+- Blackboard is in-memory + persisted. On resume, in-memory starts empty.
+- `cmdResume` doesn't use TUI yet.
+
+## VM Notes
+
+- **Disk space**: ~19GB total, can fill up. Run `go clean -cache` to reclaim ~1GB.
+- **Auth**: kimi is rate-limited, claude-code needs `/login`, no API keys set for Anthropic/OpenAI/Gemini.
+- **exec adapter always works** for testing.
+- **PAT**: Needs `workflow` scope to push `.github/workflows/` changes.

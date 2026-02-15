@@ -79,19 +79,21 @@ The structured Plan → Delegate → Monitor → Review → Replan loop. The Que
 | `internal/llm` | `cli.go` | CLI-based LLM wrapper (no tool support) |
 | `internal/llm` | `factory.go` | Provider factory: anthropic, openai, gemini, codex, kimi, gemini-cli, claude-cli, opencode |
 | `internal/tui` | `model.go`, `view.go`, `styles.go`, `events.go`, `bridge.go` | **Bubble Tea TUI dashboard** — Queen/worker/task panels with live streaming |
-| `internal/worker` | `worker.go` | `Bee` interface + concurrent `Pool` with limits |
-| `internal/adapter` | 6 adapters + `utils.go` | CLI wrappers: claude, codex, opencode, kimi, gemini, exec. All use `streamWriter` for live output. |
+| `internal/worker` | `worker.go` | `Bee` interface + concurrent `Pool` with per-task timeout enforcement |
+| `internal/adapter` | `generic.go` | **`CLIAdapter` + `CLIWorker`** — shared base for all CLI adapters with 3 prompt modes |
+| `internal/adapter` | `claude.go`, `kimi.go`, `codex.go`, `opencode.go`, `gemini.go`, `exec.go` | Thin constructors (23-29 lines each) configuring `CLIAdapter` |
 | `internal/adapter` | `adapter.go` | `Registry` + `TaskRouter` (maps task types → configured default adapter) |
+| `internal/adapter` | `utils.go` | `streamWriter` (live output with max size cap), `buildPrompt()`, `getExitCode()` |
 | `internal/bus` | `bus.go` | In-process pub/sub message bus with panic-safe handler dispatch |
-| `internal/blackboard` | `blackboard.go` | Shared memory — workers post results, Queen reads (deep-copy on History) |
+| `internal/blackboard` | `blackboard.go` | Shared memory — workers post results, Queen reads. History capped at 10k entries. |
 | `internal/state` | `db.go` | **SQLite persistence** — sessions, events, tasks, blackboard, kv |
-| `internal/task` | `task.go` | Task graph with dependency tracking, priority, status, **cycle detection** |
+| `internal/task` | `task.go` | Task graph with dependency tracking, priority, status, cycle detection, `RetryAfter` backoff |
 | `internal/config` | `config.go` | Configuration with defaults, JSON serialization |
-| `internal/safety` | `safety.go` | Path allowlisting, command blocklisting — **enforced in all adapters** |
+| `internal/safety` | `safety.go` | Path allowlisting, command blocklisting — enforced in all adapters |
 | `internal/compact` | `compact.go` | Context window management, token estimation, summarization |
-| `internal/errors` | `errors.go` | Error classification, retry/permanent types, backoff |
+| `internal/errors` | `errors.go` | Error classification, retry/permanent types, jittered exponential backoff |
 
-**Total: ~9600 lines of source + ~12200 lines of tests across 21,800 total Go lines (62 commits)**
+**Total: ~9,600 lines of source + ~12,600 lines of tests across 22,200 total Go lines (64 commits)**
 
 ## Key Interfaces
 
@@ -118,6 +120,11 @@ type Adapter interface {
     CreateWorker(id string) worker.Bee
 }
 ```
+
+All 6 adapters share `CLIAdapter` + `CLIWorker` from `generic.go`. Three `PromptMode` options:
+- `PromptAsArg` — append prompt as last CLI argument (claude, kimi, codex, opencode)
+- `PromptOnStdin` — pipe prompt to stdin (gemini)
+- `PromptAsScript` — run task description as `bash -c` script (exec)
 
 ### `llm.Client` — Provider-agnostic LLM interface
 
@@ -168,11 +175,31 @@ The TUI auto-detects TTY. Falls back to plain log output with `--plain`. After c
 
 ### Output Streaming
 
-All 6 adapters use `streamWriter` (thread-safe `io.MultiWriter` tee) to write process stdout/stderr to `w.output` in real-time. The TUI polling goroutine sends `WorkerOutputMsg` every 500ms so worker panels show live content as processes produce it.
+All adapters use `streamWriter` (thread-safe `io.MultiWriter` tee) to write process stdout/stderr to `w.output` in real-time. Output capped at `workers.max_output_size` (default 1MB) — truncation marker appended when exceeded. The TUI polling goroutine sends `WorkerOutputMsg` every 500ms.
 
 ### Bridge
 
-The bridge (`tui/bridge.go`) routes log output from the Queen into structured TUI messages, with message buffering for events that arrive before the TUI starts. Supports quiet mode (`NewQuietProgram()`) that suppresses all output.
+The bridge (`tui/bridge.go`) routes log output from the Queen into structured TUI messages, with message buffering for events that arrive before the TUI starts. Supports quiet mode (`NewQuietProgram()`).
+
+## Task Execution Model
+
+### Parallelism
+- **Planning prompt** tells the LLM planner the worker count and instructs it to minimize dependencies
+- **Agent mode prompt** instructs the Queen to assign ALL ready tasks before waiting
+- **Legacy mode** Review→Delegate shortcut: when review finds ready tasks, skips back to delegation
+- **Worker pool** enforces `max_parallel` limit; `assign_task` returns error when full
+
+### Per-Worker Timeout
+- `Pool.Spawn` wraps context with `context.WithTimeout(ctx, task.Timeout)` when `Timeout > 0`
+- `exec.CommandContext` kills the process when the deadline expires
+- `CLIWorker` detects `context.DeadlineExceeded` and reports `[timeout] worker killed`
+- Bus event `MsgWorkerFailed` published on timeout
+- Default timeout: 10 minutes (from `workers.default_timeout`)
+
+### Task Retry with Backoff
+- Failed tasks get `RetryAfter` set using jittered exponential backoff
+- `TaskGraph.Ready()` skips tasks whose `RetryAfter` hasn't elapsed
+- Max retries configurable per-task and globally via `workers.max_retries`
 
 ## Provider Selection
 
@@ -181,38 +208,25 @@ Configured via `waggle.json`:
 ```json
 {"queen": {"provider": "anthropic"}}   // Anthropic API (tool-use, needs ANTHROPIC_API_KEY)
 {"queen": {"provider": "openai"}}      // OpenAI API (tool-use, needs OPENAI_API_KEY)
-{"queen": {"provider": "gemini"}}      // Gemini API (tool-use, needs GEMINI_API_KEY)
-{"queen": {"provider": "codex"}}       // Codex CLI (tool-use via OpenAI-compatible API)
+{"queen": {"provider": "gemini-api"}}  // Gemini API (tool-use, needs GEMINI_API_KEY)
+{"queen": {"provider": "codex"}}       // Codex (tool-use via OpenAI-compatible API)
 {"queen": {"provider": "kimi"}}        // Kimi CLI (no tool-use, legacy mode)
 {"queen": {"provider": "claude-cli"}}  // Claude CLI (no tool-use, legacy mode)
 {"queen": {"provider": "opencode"}}    // OpenCode CLI (no tool-use, legacy mode)
 ```
 
-## Task Router & Parallelism
-
-`TaskRouter` maps task types to adapters, initialized from `workers.default_adapter` config.
-
-Parallel execution is enforced at multiple levels:
-- **Planning prompt** tells the LLM planner the worker count and instructs it to minimize dependencies — only add `depends_on` when tasks truly can't run without another's output.
-- **Agent mode prompt** instructs the Queen to assign ALL ready tasks before waiting.
-- **Legacy mode** Review→Delegate shortcut: when review finds ready tasks, skips back to delegation instead of re-planning.
-- **Worker pool** enforces `max_parallel` limit; `assign_task` returns error when full.
-
 ## Scope Constraints System
 
 Three layers control what workers can and cannot do:
 
-1. **Plan prompt** — The Queen instructs the planner to produce narrowly-scoped tasks with `constraints` (what NOT to do) and `allowed_paths` (what files may be touched).
-2. **Default constraints** — Every task gets baseline rules injected at delegation: no out-of-scope changes, no unsolicited refactoring, no signature changes, report issues don't fix them.
-3. **Worker prompt** — `buildPrompt()` renders a `--- SCOPE CONSTRAINTS ---` block visible to every worker, combining planner-generated and default constraints.
+1. **Plan prompt** — narrowly-scoped tasks with `constraints` and `allowed_paths`
+2. **Default constraints** — injected via `injectDefaultConstraints()` at delegation: no out-of-scope changes, no unsolicited refactoring, no signature changes
+3. **Worker prompt** — `buildPrompt()` renders `--- SCOPE CONSTRAINTS ---` block
 
 ## Safety Guard
 
-The `safety.Guard` is wired into all adapter constructors and enforced at spawn time:
-
-- `ValidateTaskPaths()` — checks task's allowed_paths against the guard's allowlist
-- `CheckCommand()` — scans task description/script for blocked commands
-- `IsReadOnly()` — prepends read-only warning to worker prompts when enabled
+`safety.Guard` wired into all adapter constructors, enforced at spawn time:
+- `ValidateTaskPaths()`, `CheckCommand()`, `IsReadOnly()`, `CheckFileSize()`
 - All adapter goroutines have `defer/recover` for panic safety
 
 ## Persistence Layer
@@ -223,12 +237,11 @@ The `safety.Guard` is wired into all adapter constructors and enforced at spawn 
 ```
 
 ### SQLite Schema
-
-- **sessions** — one row per `waggle run` invocation (id, objective, status, phase, iteration, timestamps)
+- **sessions** — one row per `waggle run` invocation
 - **events** — append-only event log indexed by session + type
-- **tasks** — full task state (status, worker_id, result JSON, result_data, retries, deps)
+- **tasks** — full task state (status, worker_id, result JSON, retries, deps)
 - **blackboard** — persisted shared memory (key/value per session)
-- **kv** — general purpose key-value store (used for persisting agent conversation turns)
+- **kv** — general purpose key-value store (agent conversation turns)
 
 ## CLI Commands
 
@@ -242,7 +255,7 @@ waggle --workers 8 run "<obj>"        # Set parallelism
 waggle --plain run "<obj>"            # Force plain log output (no TUI)
 waggle --legacy run "<obj>"           # Force legacy orchestration loop
 waggle --quiet run "<obj>"            # Suppress all output except errors
-waggle --json run "<obj>"             # Output results as JSON (for scripting)
+waggle --json run "<obj>"             # Output results as JSON
 waggle status                         # Show current/last session
 waggle config                         # Show configuration
 waggle resume <session-id>            # Resume interrupted session
@@ -251,12 +264,15 @@ waggle resume <session-id>            # Resume interrupted session
 ## Build & Development
 
 ```bash
-just build          # Build ./waggle binary
-just test           # Run all tests
-just test-pkg queen # Test specific package
-just ci             # fmt-check + vet + test
-just run "<obj>"    # Build & run with objective
-just run-interactive # Launch TUI prompt
+just build              # Build ./waggle binary
+just test               # Run all tests
+just test-pkg queen     # Test specific package
+just test-race          # Tests with race detector
+just ci                 # fmt-check + vet + test
+just run "<obj>"        # Build & run with objective
+just run-interactive    # Launch TUI prompt
+just fmt                # Format all Go files
+just clean              # Remove binary + .hive/
 ```
 
 ## Configuration (`waggle.json`)
@@ -264,8 +280,8 @@ just run-interactive # Launch TUI prompt
 ```json
 {
   "queen": {
-    "provider": "codex",
-    "model": "gpt-5-nano-2025-08-07",
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-20250514",
     "max_iterations": 50,
     "plan_timeout": 300000000000,
     "review_timeout": 120000000000,
@@ -275,16 +291,10 @@ just run-interactive # Launch TUI prompt
     "max_parallel": 4,
     "default_timeout": 600000000000,
     "max_retries": 2,
-    "default_adapter": "kimi"
+    "default_adapter": "claude-code",
+    "max_output_size": 1048576
   },
-  "adapters": {
-    "kimi": { "command": "kimi", "args": ["--print", "--final-message-only", "-p"] },
-    "opencode": { "command": "opencode", "args": ["run"] },
-    "gemini": { "command": "gemini" },
-    "claude-code": { "command": "claude", "args": ["-p"] },
-    "codex": { "command": "codex", "args": ["exec"] },
-    "exec": { "command": "bash" }
-  },
+  "adapters": { ... },
   "safety": {
     "allowed_paths": ["."],
     "blocked_commands": ["rm -rf /", "sudo rm"],
@@ -295,39 +305,56 @@ just run-interactive # Launch TUI prompt
 
 ## Adapters — Current State
 
-| Adapter | CLI | Non-interactive Command | Status |
-|---------|-----|------------------------|--------|
-| `kimi` | Kimi Code | `kimi --print --final-message-only -p "<prompt>"` | ✅ **Working, fast (~60s/task)** |
-| `opencode` | OpenCode | `opencode run "<prompt>"` | ✅ Working, slow (~2-3min/task) |
-| `gemini` | Gemini CLI | `echo "<prompt>" \| gemini` | 🔑 Installed, needs capacity |
-| `claude-code` | Claude Code | `claude -p "<prompt>"` | 🔑 Needs `/login` |
-| `codex` | Codex | `codex exec "<prompt>"` | ✅ Working |
-| `exec` | bash | `bash -c "<description>"` | ✅ Always available |
+| Adapter | CLI | Status |
+|---------|-----|--------|
+| `kimi` | `kimi --print --final-message-only -p "<prompt>"` | ✅ Working (rate-limited on this VM) |
+| `opencode` | `opencode run "<prompt>"` | ✅ Working |
+| `gemini` | `echo "<prompt>" \| gemini` | 🔑 Needs capacity |
+| `claude-code` | `claude -p "<prompt>"` | 🔑 Needs `/login` on this VM |
+| `codex` | `codex exec "<prompt>"` | ✅ Working |
+| `exec` | `bash -c "<description>"` | ✅ Always available |
+
+**Note**: On this VM, kimi is rate-limited and claude-code needs login. No API keys are set for Anthropic/OpenAI/Gemini. The exec adapter always works for testing.
+
+## Test Coverage
+
+| Package | Tests | Status |
+|---------|-------|--------|
+| `adapter` | Functionality, safety integration, prompt building, stream writer | ✅ |
+| `blackboard` | Post/Read, List, Delete, History, Watch, concurrency | ✅ |
+| `bus` | Publish, Subscribe, panic recovery | ✅ |
+| `compact` | Context lifecycle, compaction, token estimation, summarizer | ✅ |
+| `config` | Defaults, Load/Save roundtrip, HivePath, output modes | ✅ |
+| `errors` | Classification, backoff, jitter, panic recovery | ✅ |
+| `llm` | Provider types, tool definitions | ✅ |
+| `queen` | Agent mode, tools (11), orchestrator loop, review, replan, prompts | ✅ |
+| `safety` | Guard creation, path/command/filesize checks, task validation | ✅ |
+| `state` | SQLite CRUD, sessions, tasks, events, kv | ✅ |
+| `task` | Graph, dependencies, cycle detection, status, ready | ✅ |
+| `worker` | Pool lifecycle, spawn, timeout, kill, concurrency | ✅ |
+| `cmd/waggle` | ❌ No tests |
+| `output` | ❌ No tests |
+| `tui` | ❌ No tests |
+
+**12,600 lines of tests across 30 test files. All passing.**
 
 ## What Was Tested End-to-End
 
 1. **exec adapter** — parallel shell tasks with dependencies (4 tasks, 2 waves) ✅
-2. **opencode adapter** — 15-task code review, 3 waves, 12/15 completed before timeout ✅
-3. **kimi adapter** — 5-task codebase review, 2 waves, all completed in ~3 minutes ✅
-4. **Pre-defined tasks** (`--tasks file.json`) — loaded and executed with dependency ordering ✅
-5. **Retry logic** — failed tasks retried up to `max_retries`, then marked failed ✅
-6. **Status command** — SQLite-backed with JSONL fallback for legacy sessions ✅
-7. **Real-time output** — worker findings printed as they complete ✅
-8. **Final report** — complete consolidated report at end of run ✅
-9. **Scope constraints** — kimi workers stayed in `internal/bus/` (1 file) vs. 19 files without constraints ✅
-10. **Session status preservation** — Close() preserves 'done'/'failed' status, 3 unit tests ✅
-11. **Bus panic recovery** — panicking handlers caught, other handlers still execute, 5 tests ✅
-12. **LLM review + replan** — kimi as Queen's brain, approved 4 tasks, replan returned 0 new tasks ✅
-13. **Cycle detection** — DFS-based, 12 test cases, integrated into parsePlanOutput() ✅
-14. **Agent mode** — Queen as autonomous tool-using agent with Anthropic/OpenAI/Gemini providers ✅
-15. **TUI dashboard** — Real-time Bubble Tea display of Queen reasoning, tasks, workers ✅
-16. **Session resume** — Agent-mode conversation restored from SQLite kv store ✅
-17. **Parallel task execution** — 4 workers running concurrently with proper dependency checks ✅
-18. **Live worker output streaming** — TUI shows worker output in real-time via streamWriter ✅
+2. **opencode adapter** — 15-task code review, 3 waves, 12/15 completed ✅
+3. **kimi adapter** — 5-task codebase review, 2 waves, all completed ~3min ✅
+4. **Pre-defined tasks** (`--tasks file.json`) with dependency ordering ✅
+5. **Scope constraints** — workers stayed in allowed paths ✅
+6. **LLM review + replan** — approved tasks, replan returned 0 new tasks ✅
+7. **Agent mode** — Queen as autonomous tool-using agent ✅
+8. **TUI dashboard** — real-time Queen/worker/task display ✅
+9. **Waggle on itself** — framework planned 5 tasks, delegated in parallel waves of 4 ✅
 
 ## Known Issues
 
-- None currently — all tests passing.
+- On this VM: kimi rate-limited, claude-code needs `/login`, no API keys set
+- CI workflow needs PAT with `workflow` scope to push (was pushed by user)
+- Disk space can run low (~19GB total) — run `go clean -cache` if needed
 
 ## Dependencies
 
@@ -342,7 +369,7 @@ just run-interactive # Launch TUI prompt
 ## Repository
 
 - GitHub: <https://github.com/HexSleeves/waggle>
-- 62 commits on `main`
+- 64 commits on `main`
 - Build: `just build` / `just ci`
 - CI: GitHub Actions (fmt-check + vet + test + build on push/PR)
 - No releases yet
