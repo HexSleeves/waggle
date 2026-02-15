@@ -449,10 +449,22 @@ The system auto-detects: if `queen.provider` implements `ToolClient`, use agent 
 
 ## Success Criteria
 
-- [ ] `waggle --provider anthropic run "Review this codebase"` uses the agent loop
-- [ ] Queen autonomously plans, delegates, monitors, reviews, and completes
-- [ ] Failed tasks get rejected with feedback and retried
-- [ ] `waggle --legacy run "..."` still works with the old loop
-- [ ] CLI-based providers (kimi, gemini) fall back to legacy loop automatically
-- [ ] Session can be resumed mid-conversation
-- [ ] All existing tests still pass
+- [x] `waggle --provider anthropic run "Review this codebase"` uses the agent loop
+- [x] Queen autonomously plans, delegates, monitors, reviews, and completes
+- [x] Failed tasks get rejected with feedback and retried
+- [x] `waggle --legacy run "..."` still works with the old loop
+- [x] CLI-based providers (kimi, gemini) fall back to legacy loop automatically
+- [x] Session can be resumed mid-conversation
+- [x] All existing tests still pass
+
+## Status: Phases 1-5 Complete
+
+| Phase | Commit | Status |
+|-------|--------|--------|
+| Phase 1: LLM tool-use types + Anthropic implementation | `34e7f46` | ✅ |
+| Phase 2: Tool definitions + handlers (12 tools) | `c881568` | ✅ |
+| Phase 3: Queen system prompt | `a5bd96b` | ✅ |
+| Phase 4: Agent loop (RunAgent) | `3ab879e` | ✅ |
+| Phase 5: CLI wiring + --legacy flag | `3ab879e` | ✅ |
+| Phase 6: Conversation persistence | `3ab879e` (KV store) | ✅ (basic) |
+| Phase 7: Context window management | `3ab879e` (compactMessages) | ✅ |
