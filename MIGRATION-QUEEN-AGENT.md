@@ -405,6 +405,40 @@ Phase 1 (LLM tool use)     ← Foundation, no risk to existing code
 | `review.go` | Kept for legacy mode, not used in agent mode |
 | `replan.go` | Kept for legacy mode, not used in agent mode |
 
+## Configuration: Queen vs Workers
+
+The Queen and workers are **independently configurable**:
+
+```json
+{
+  "queen": {
+    "provider": "anthropic",
+    "model": "claude-sonnet-4-20250514"
+  },
+  "workers": {
+    "default_adapter": "kimi",
+    "max_parallel": 4
+  }
+}
+```
+
+| Setting | What it controls | Examples |
+|---------|-----------------|----------|
+| `queen.provider` | Queen's reasoning engine | `anthropic`, `openai`, `kimi`, `codex`, `gemini`, `claude-cli` |
+| `workers.default_adapter` | CLI tool workers run as | `kimi`, `claude-code`, `codex`, `opencode`, `gemini`, `exec` |
+
+**Any combination works.** Examples:
+- `queen=anthropic + workers=kimi` → Queen reasons via API, workers code via Kimi (cheapest)
+- `queen=anthropic + workers=claude-code` → Full Anthropic stack
+- `queen=anthropic + workers=exec` → Queen orchestrates shell commands
+- `queen=kimi + workers=kimi` → All-Kimi (legacy loop, no tool use)
+- `queen=codex + workers=kimi` → Codex plans, Kimi executes (legacy loop)
+
+**Agent loop** (tool use) requires a provider with structured tool support: `anthropic`, `openai` (future).
+**Legacy loop** (fixed phases) works with any provider, including CLI-based ones.
+
+The system auto-detects: if `queen.provider` implements `ToolClient`, use agent loop. Otherwise, fall back to legacy.
+
 ## Risks
 
 1. **Token cost** — Each tool call round-trip costs tokens. Mitigate with efficient state formatting and compaction.
