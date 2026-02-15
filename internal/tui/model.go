@@ -149,11 +149,19 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "up", "k":
 			if m.viewMode == viewWorker {
 				lines := m.workerOutputs[m.viewWorkerID]
-				if m.workerScroll < len(lines)-1 {
+				maxScroll := len(lines) - m.visibleHeight()
+				if maxScroll < 0 {
+					maxScroll = 0
+				}
+				if m.workerScroll < maxScroll {
 					m.workerScroll++
 				}
 			} else {
-				if m.queenScroll < len(m.queenLines)-1 {
+				maxScroll := len(m.queenLines) - m.visibleHeight()
+				if maxScroll < 0 {
+					maxScroll = 0
+				}
+				if m.queenScroll < maxScroll {
 					m.queenScroll++
 				}
 			}
@@ -347,6 +355,31 @@ func (m Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.inputCursor++
 	}
 	return m, nil
+}
+
+// visibleHeight returns the number of content lines visible in the main panel.
+func (m Model) visibleHeight() int {
+	h := m.height
+	if h < 10 {
+		h = 24
+	}
+	taskRows := len(m.tasks)
+	if taskRows == 0 {
+		taskRows = 1
+	}
+	taskH := taskRows + 3
+	if taskH > h/3 {
+		taskH = h / 3
+	}
+	queenH := h - taskH - 1 - 4 // status bar + borders
+	if queenH < 5 {
+		queenH = 5
+	}
+	visibleH := queenH - 1 // title line
+	if visibleH < 1 {
+		visibleH = 1
+	}
+	return visibleH
 }
 
 func (m *Model) cycleView(direction int) {
