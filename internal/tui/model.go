@@ -116,9 +116,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.height = msg.Height
 
 	case TickMsg:
-		if !m.done {
-			return m, tickCmd()
-		}
+		return m, tickCmd()
 
 	case QueenThinkingMsg:
 		m.addQueenLine(msg.Text, "think")
