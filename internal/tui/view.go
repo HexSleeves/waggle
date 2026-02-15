@@ -40,6 +40,11 @@ func (m Model) View() string {
 
 	innerW := w - 2 // border eats 2 chars
 
+	// Input mode: full-screen prompt
+	if m.input == inputWaiting {
+		return m.renderInputView(w, h)
+	}
+
 	var mainPanel string
 	switch m.viewMode {
 	case viewWorker:
@@ -52,6 +57,67 @@ func (m Model) View() string {
 	sbar := m.renderStatusBar(w)
 
 	return mainPanel + "\n" + taskPanel + "\n" + sbar
+}
+
+func (m Model) renderInputView(w, h int) string {
+	// Centered prompt
+	title := lipgloss.NewStyle().
+		Foreground(colorGold).
+		Bold(true).
+		Render("🐝 Waggle")
+
+	subtitle := subtleStyle.Render("Multi-agent orchestration through the waggle dance.")
+
+	promptLabel := lipgloss.NewStyle().
+		Foreground(colorHoney).
+		Bold(true).
+		Render("Objective:")
+
+	// Render input with cursor
+	inputW := w - 16
+	if inputW < 30 {
+		inputW = 30
+	}
+	if inputW > 100 {
+		inputW = 100
+	}
+
+	// Build display text with cursor
+	text := m.inputText
+	var displayText string
+	if m.inputCursor < len(text) {
+		before := text[:m.inputCursor]
+		cursorChar := string(text[m.inputCursor])
+		after := text[m.inputCursor+1:]
+		displayText = queenTextStyle.Render(before) +
+			lipgloss.NewStyle().Reverse(true).Render(cursorChar) +
+			queenTextStyle.Render(after)
+	} else {
+		displayText = queenTextStyle.Render(text) +
+			lipgloss.NewStyle().Reverse(true).Render(" ")
+	}
+
+	inputBox := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(colorGold).
+		Padding(0, 1).
+		Width(inputW).
+		Render(displayText)
+
+	hint := subtleStyle.Render("Enter to start · Ctrl+C to quit")
+
+	// Center everything vertically
+	lines := []string{"", "", title, subtitle, "", promptLabel, inputBox, "", hint}
+	content := strings.Join(lines, "\n")
+
+	// Center horizontally
+	centered := lipgloss.NewStyle().
+		Width(w).
+		Height(h).
+		Align(lipgloss.Center, lipgloss.Center).
+		Render(content)
+
+	return centered
 }
 
 func (m Model) renderQueenPanel(w, h int) string {
@@ -295,13 +361,15 @@ func (m Model) renderStatusBar(w int) string {
 			left = "🐝 " + errorStyle.Render("✗ Failed")
 		}
 		left += subtleStyle.Render("  press any key to exit")
-	} else {
+	} else if m.objective != "" {
 		obj := m.objective
 		maxObj := w/2 - 5
 		if maxObj > 0 && len(obj) > maxObj {
 			obj = obj[:maxObj] + "…"
 		}
 		left = "🐝 " + obj
+	} else {
+		left = "🐝 Waggle"
 	}
 
 	// Navigation hint

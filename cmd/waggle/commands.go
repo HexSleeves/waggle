@@ -95,11 +95,10 @@ func cmdConfig(ctx context.Context, cmd *cli.Command) error {
 
 func cmdRun(ctx context.Context, cmd *cli.Command) error {
 	args := cmd.Args().Slice()
-	if len(args) == 0 {
-		return fmt.Errorf("usage: waggle run <objective>")
+	objective := ""
+	if len(args) > 0 {
+		objective = args[0]
 	}
-
-	objective := args[0]
 	return runObjective(ctx, cmd, objective)
 }
 
@@ -113,33 +112,70 @@ func runObjective(ctx context.Context, cmd *cli.Command, objective string) error
 	isTTY := term.IsTerminal(int(os.Stdout.Fd()))
 	useTUI := isTTY && !forcePlain
 
+	// Interactive mode: no objective provided, start TUI with input prompt
+	if objective == "" && useTUI {
+		return runInteractiveTUI(ctx, cfg, tasksFile, forceLegacy)
+	}
+
+	if objective == "" {
+		return fmt.Errorf("usage: waggle run <objective>")
+	}
+
 	if useTUI {
 		return runWithTUI(ctx, cfg, objective, tasksFile, forceLegacy)
 	}
 	return runPlain(ctx, cmd, cfg, objective, tasksFile, forceLegacy)
 }
 
-func runWithTUI(ctx context.Context, cfg *config.Config, objective, tasksFile string, forceLegacy bool) error {
-	// Create queen with a logger that writes to the TUI
+func runInteractiveTUI(ctx context.Context, cfg *config.Config, tasksFile string, forceLegacy bool) error {
 	maxTurns := cfg.Queen.MaxIterations
 	if maxTurns <= 0 {
 		maxTurns = 50
 	}
-	tuiProg := tui.NewProgram(objective, maxTurns)
 
-	// Create a logger that routes to the TUI
-	logger := log.New(tuiProg.LogWriter(), "", log.LstdFlags)
+	tuiProg, objectiveCh := tui.NewInteractiveProgram(maxTurns)
 
-	q, err := queen.New(cfg, logger)
-	if err != nil {
-		return fmt.Errorf("init queen: %w", err)
+	// Wait for the user to submit an objective, then boot the Queen
+	go func() {
+		objective, ok := <-objectiveCh
+		if !ok || objective == "" {
+			return
+		}
+
+		logger := log.New(tuiProg.LogWriter(), "", log.LstdFlags)
+
+		q, err := queen.New(cfg, logger)
+		if err != nil {
+			tuiProg.SendDone(false, "", fmt.Sprintf("init queen: %v", err))
+			return
+		}
+		q.SetLogger(logger)
+		q.SuppressReport()
+
+		subscribeBusEvents(q, tuiProg)
+
+		if tasksFile != "" {
+			tasks, err := loadTasksFile(tasksFile, cfg)
+			if err != nil {
+				q.Close()
+				tuiProg.SendDone(false, "", fmt.Sprintf("load tasks: %v", err))
+				return
+			}
+			q.SetTasks(tasks)
+		}
+
+		// startQueen handles the run goroutine + polling; we just wait
+		startQueen(ctx, q, tuiProg, objective, forceLegacy)
+	}()
+
+	if _, err := tuiProg.Run(); err != nil {
+		return fmt.Errorf("TUI error: %w", err)
 	}
+	return nil
+}
 
-	// Redirect the queen's logger to TUI and suppress direct stdout
-	q.SetLogger(logger)
-	q.SuppressReport()
-
-	// Subscribe to bus events for task/worker updates
+// subscribeBusEvents wires Queen bus events to the TUI program.
+func subscribeBusEvents(q *queen.Queen, tuiProg *tui.Program) {
 	q.Bus().Subscribe(bus.MsgTaskCreated, func(msg bus.Message) {
 		if t, ok := msg.Payload.(*task.Task); ok {
 			tuiProg.SendTaskUpdate(t.ID, t.Title, string(t.Type), string(t.Status), "")
@@ -159,7 +195,6 @@ func runWithTUI(ctx context.Context, cfg *config.Config, objective, tasksFile st
 		})
 	})
 	q.Bus().Subscribe(bus.MsgWorkerCompleted, func(msg bus.Message) {
-		// Capture final output before worker is cleaned up
 		for wid, output := range q.ActiveWorkerOutputs() {
 			if output != "" {
 				tuiProg.SendWorkerOutput(wid, output)
@@ -170,7 +205,6 @@ func runWithTUI(ctx context.Context, cfg *config.Config, objective, tasksFile st
 		})
 	})
 	q.Bus().Subscribe(bus.MsgWorkerFailed, func(msg bus.Message) {
-		// Capture final output before worker is cleaned up
 		for wid, output := range q.ActiveWorkerOutputs() {
 			if output != "" {
 				tuiProg.SendWorkerOutput(wid, output)
@@ -180,42 +214,35 @@ func runWithTUI(ctx context.Context, cfg *config.Config, objective, tasksFile st
 			ID: msg.WorkerID, TaskID: msg.TaskID, Status: "failed",
 		})
 	})
+}
 
-	// Load pre-defined tasks
-	if tasksFile != "" {
-		tasks, err := loadTasksFile(tasksFile, cfg)
-		if err != nil {
-			q.Close()
-			return fmt.Errorf("load tasks file: %w", err)
-		}
-		q.SetTasks(tasks)
-	}
-
-	// Run the queen in a goroutine, TUI in the main thread
-	runCtx, cancel := context.WithCancel(ctx)
-	var runErr error
-
-	// Poll worker outputs periodically and send to TUI
-	go func() {
-		ticker := time.NewTicker(500 * time.Millisecond)
-		defer ticker.Stop()
-		for {
-			select {
-			case <-runCtx.Done():
-				// Send final snapshot
-				for wid, output := range q.ActiveWorkerOutputs() {
+// pollWorkerOutputs periodically sends worker output snapshots to the TUI.
+func pollWorkerOutputs(ctx context.Context, q *queen.Queen, tuiProg *tui.Program) {
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			for wid, output := range q.ActiveWorkerOutputs() {
+				tuiProg.SendWorkerOutput(wid, output)
+			}
+			return
+		case <-ticker.C:
+			for wid, output := range q.ActiveWorkerOutputs() {
+				if output != "" {
 					tuiProg.SendWorkerOutput(wid, output)
-				}
-				return
-			case <-ticker.C:
-				for wid, output := range q.ActiveWorkerOutputs() {
-					if output != "" {
-						tuiProg.SendWorkerOutput(wid, output)
-					}
 				}
 			}
 		}
-	}()
+	}
+}
+
+// startQueen runs the Queen in a goroutine and sends Done when finished.
+func startQueen(ctx context.Context, q *queen.Queen, tuiProg *tui.Program, objective string, forceLegacy bool) (context.CancelFunc, *error) {
+	runCtx, cancel := context.WithCancel(ctx)
+	var runErr error
+
+	go pollWorkerOutputs(runCtx, q, tuiProg)
 
 	go func() {
 		defer cancel()
@@ -234,14 +261,45 @@ func runWithTUI(ctx context.Context, cfg *config.Config, objective, tasksFile st
 		}
 	}()
 
-	// Run the TUI (blocks until done)
+	return cancel, &runErr
+}
+
+func runWithTUI(ctx context.Context, cfg *config.Config, objective, tasksFile string, forceLegacy bool) error {
+	maxTurns := cfg.Queen.MaxIterations
+	if maxTurns <= 0 {
+		maxTurns = 50
+	}
+	tuiProg := tui.NewProgram(objective, maxTurns)
+
+	logger := log.New(tuiProg.LogWriter(), "", log.LstdFlags)
+
+	q, err := queen.New(cfg, logger)
+	if err != nil {
+		return fmt.Errorf("init queen: %w", err)
+	}
+	q.SetLogger(logger)
+	q.SuppressReport()
+
+	subscribeBusEvents(q, tuiProg)
+
+	if tasksFile != "" {
+		tasks, err := loadTasksFile(tasksFile, cfg)
+		if err != nil {
+			q.Close()
+			return fmt.Errorf("load tasks file: %w", err)
+		}
+		q.SetTasks(tasks)
+	}
+
+	cancel, runErr := startQueen(ctx, q, tuiProg, objective, forceLegacy)
+
 	if _, err := tuiProg.Run(); err != nil {
 		cancel()
 		q.Close()
 		return fmt.Errorf("TUI error: %w", err)
 	}
 
-	return runErr
+	return *runErr
 }
 
 func runPlain(ctx context.Context, cmd *cli.Command, cfg *config.Config, objective, tasksFile string, forceLegacy bool) error {

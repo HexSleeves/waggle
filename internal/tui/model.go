@@ -20,6 +20,15 @@ const (
 	viewQueen  viewMode = iota
 	viewWorker
 )
+
+type inputState int
+
+const (
+	inputNone     inputState = iota // objective already provided
+	inputWaiting                    // waiting for user to type objective
+	inputRunning                    // objective submitted, queen running
+)
+
 // TaskInfo tracks task state for display.
 type TaskInfo struct {
 	ID       string
@@ -67,6 +76,12 @@ type Model struct {
 	workerScroll  int                 // scroll offset for worker view (from bottom)
 	workerTasks   map[string]string   // worker ID -> task title
 
+	// Input mode (interactive start)
+	input       inputState
+	inputText   string // text being typed
+	inputCursor int
+	objectiveCh chan<- string // channel to send objective when submitted
+
 	// For tick
 	quitting bool
 }
@@ -76,7 +91,7 @@ type queenLine struct {
 	style string // "think", "tool", "result", "error", "info"
 }
 
-// New creates a new TUI model.
+// New creates a new TUI model with a pre-set objective.
 func New(objective string, maxTurns int) Model {
 	return Model{
 		objective:     objective,
@@ -88,6 +103,23 @@ func New(objective string, maxTurns int) Model {
 		startTime:     time.Now(),
 		workerOutputs: make(map[string][]string),
 		workerTasks:   make(map[string]string),
+		input:         inputNone,
+	}
+}
+
+// NewInteractive creates a TUI model that prompts for an objective.
+func NewInteractive(maxTurns int, objectiveCh chan<- string) Model {
+	return Model{
+		queenLines:    []queenLine{},
+		tasks:         []TaskInfo{},
+		taskMap:       make(map[string]int),
+		workers:       make(map[string]*WorkerInfo),
+		maxTurn:       maxTurns,
+		startTime:     time.Now(),
+		workerOutputs: make(map[string][]string),
+		workerTasks:   make(map[string]string),
+		input:         inputWaiting,
+		objectiveCh:   objectiveCh,
 	}
 }
 
@@ -105,6 +137,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 
 	case tea.KeyMsg:
+		// Input mode: capture text for objective
+		if m.input == inputWaiting {
+			return m.handleInputKey(msg)
+		}
+
 		switch msg.String() {
 		case "q", "ctrl+c":
 			m.quitting = true
@@ -254,6 +291,61 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.queenScroll = 0
 	}
 
+	return m, nil
+}
+
+func (m Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyCtrlC:
+		m.quitting = true
+		return m, tea.Quit
+	case tea.KeyEnter:
+		text := strings.TrimSpace(m.inputText)
+		if text == "" {
+			return m, nil
+		}
+		m.objective = text
+		m.input = inputRunning
+		m.startTime = time.Now()
+		// Notify the command layer
+		if m.objectiveCh != nil {
+			m.objectiveCh <- text
+		}
+		return m, nil
+	case tea.KeyBackspace:
+		if m.inputCursor > 0 {
+			m.inputText = m.inputText[:m.inputCursor-1] + m.inputText[m.inputCursor:]
+			m.inputCursor--
+		}
+	case tea.KeyDelete:
+		if m.inputCursor < len(m.inputText) {
+			m.inputText = m.inputText[:m.inputCursor] + m.inputText[m.inputCursor+1:]
+		}
+	case tea.KeyLeft:
+		if m.inputCursor > 0 {
+			m.inputCursor--
+		}
+	case tea.KeyRight:
+		if m.inputCursor < len(m.inputText) {
+			m.inputCursor++
+		}
+	case tea.KeyHome, tea.KeyCtrlA:
+		m.inputCursor = 0
+	case tea.KeyEnd, tea.KeyCtrlE:
+		m.inputCursor = len(m.inputText)
+	case tea.KeyCtrlU:
+		m.inputText = m.inputText[m.inputCursor:]
+		m.inputCursor = 0
+	case tea.KeyCtrlK:
+		m.inputText = m.inputText[:m.inputCursor]
+	case tea.KeyRunes:
+		ch := msg.String()
+		m.inputText = m.inputText[:m.inputCursor] + ch + m.inputText[m.inputCursor:]
+		m.inputCursor += len(ch)
+	case tea.KeySpace:
+		m.inputText = m.inputText[:m.inputCursor] + " " + m.inputText[m.inputCursor:]
+		m.inputCursor++
+	}
 	return m, nil
 }
 

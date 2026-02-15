@@ -66,3 +66,8 @@ type WorkerOutputMsg struct {
 	WorkerID string
 	Output   string
 }
+
+// ObjectiveSubmittedMsg is sent when the user submits an objective in interactive mode.
+type ObjectiveSubmittedMsg struct {
+	Objective string
+}

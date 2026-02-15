@@ -12,18 +12,29 @@ import (
 // Program wraps a Bubble Tea program with helper methods for sending events.
 // Messages sent before Run() are buffered and replayed once the program starts.
 type Program struct {
-	program *tea.Program
-	mu      sync.Mutex
-	started bool
-	buffer  []tea.Msg
-	quiet   bool // Quiet mode: don't start TUI, print only essentials
+	program     *tea.Program
+	mu          sync.Mutex
+	started     bool
+	buffer      []tea.Msg
+	quiet       bool        // Quiet mode: don't start TUI, print only essentials
+	objectiveCh chan string  // receives objective in interactive mode
 }
 
-// NewProgram creates a TUI program.
+// NewProgram creates a TUI program with a pre-set objective.
 func NewProgram(objective string, maxTurns int) *Program {
 	model := New(objective, maxTurns)
 	p := tea.NewProgram(model, tea.WithAltScreen())
 	return &Program{program: p}
+}
+
+// NewInteractiveProgram creates a TUI that prompts for an objective.
+// The objective is sent to the returned channel when the user presses Enter.
+func NewInteractiveProgram(maxTurns int) (*Program, <-chan string) {
+	ch := make(chan string, 1)
+	model := NewInteractive(maxTurns, ch)
+	p := tea.NewProgram(model, tea.WithAltScreen())
+	prog := &Program{program: p, objectiveCh: ch}
+	return prog, ch
 }
 
 // SetQuiet enables quiet mode where the TUI is not started and only
@@ -40,7 +51,6 @@ func (p *Program) Run() (tea.Model, error) {
 	p.mu.Lock()
 	if p.quiet {
 		p.mu.Unlock()
-		// In quiet mode, don't start TUI at all
 		return Model{done: true, success: true}, nil
 	}
 	// Mark as started and flush buffer

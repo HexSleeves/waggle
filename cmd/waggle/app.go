@@ -121,7 +121,8 @@ func newApp() *cli.Command {
 			// Default action: treat remaining args as objective (implicit run)
 			args := cmd.Args().Slice()
 			if len(args) == 0 {
-				return cli.ShowAppHelp(cmd)
+				// No objective: start interactive TUI
+				return runObjective(ctx, cmd, "")
 			}
 			objective := args[0]
 			return runObjective(ctx, cmd, objective)
