@@ -60,7 +60,9 @@ func NewPool(maxParallel int, factory Factory, b *bus.MessageBus) *Pool {
 	}
 }
 
-// Spawn creates and starts a new worker for a task
+// Spawn creates and starts a new worker for a task.
+// If the task has a Timeout, the worker's context is wrapped with a deadline
+// so the process is killed automatically if it exceeds the timeout.
 func (p *Pool) Spawn(ctx context.Context, t *task.Task, adapterName string) (Bee, error) {
 	p.mu.Lock()
 	// Count active workers
@@ -95,7 +97,31 @@ func (p *Pool) Spawn(ctx context.Context, t *task.Task, adapterName string) (Bee
 		})
 	}
 
-	if err := bee.Spawn(ctx, t); err != nil {
+	// Apply per-task timeout: wrap context with deadline so
+	// exec.CommandContext kills the process when it expires.
+	spawnCtx := ctx
+	if t.Timeout > 0 {
+		var cancel context.CancelFunc
+		spawnCtx, cancel = context.WithTimeout(ctx, t.Timeout)
+		// Monitor the deadline in a goroutine and publish a timeout event.
+		go func() {
+			<-spawnCtx.Done()
+			cancel()
+			if spawnCtx.Err() == context.DeadlineExceeded {
+				if p.msgBus != nil {
+					p.msgBus.Publish(bus.Message{
+						Type:     bus.MsgWorkerFailed,
+						WorkerID: workerID,
+						TaskID:   t.ID,
+						Payload:  fmt.Sprintf("timed out after %s", t.Timeout),
+						Time:     time.Now(),
+					})
+				}
+			}
+		}()
+	}
+
+	if err := bee.Spawn(spawnCtx, t); err != nil {
 		return nil, fmt.Errorf("spawn worker: %w", err)
 	}
 

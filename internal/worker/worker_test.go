@@ -21,6 +21,7 @@ type mockBee struct {
 	status     atomic.Value
 	result     *task.Result
 	spawnErr   error
+	spawnFunc  func(ctx context.Context, t *task.Task) error // custom spawn behavior
 	killCalled atomic.Bool
 	mu         sync.Mutex
 	output     string
@@ -48,6 +49,9 @@ func (m *mockBee) Type() string {
 func (m *mockBee) Spawn(ctx context.Context, t *task.Task) error {
 	if m.spawnErr != nil {
 		return m.spawnErr
+	}
+	if m.spawnFunc != nil {
+		return m.spawnFunc(ctx, t)
 	}
 	m.status.Store(StatusRunning)
 
@@ -761,4 +765,94 @@ func (m *panickingMockBee) Spawn(ctx context.Context, t *task.Task) error {
 	}()
 
 	return nil
+}
+
+func TestPoolSpawnWithTimeout(t *testing.T) {
+	b := bus.New(100)
+	factory := func(id, adapter string) (Bee, error) {
+		m := newMockBee(id, adapter)
+		// Simulate a long-running worker that takes 5s
+		m.spawnFunc = func(ctx context.Context, tk *task.Task) error {
+			go func() {
+				m.status.Store(StatusRunning)
+				select {
+				case <-ctx.Done():
+					m.mu.Lock()
+					m.status.Store(StatusFailed)
+					m.result = &task.Result{
+						Success: false,
+						Errors:  []string{"context cancelled"},
+					}
+					m.mu.Unlock()
+				case <-time.After(5 * time.Second):
+					m.mu.Lock()
+					m.status.Store(StatusComplete)
+					m.result = &task.Result{Success: true, Output: "done"}
+					m.mu.Unlock()
+				}
+			}()
+			return nil
+		}
+		return m, nil
+	}
+
+	pool := NewPool(4, factory, b)
+
+	// Task with a 200ms timeout
+	tk := &task.Task{
+		ID:      "timeout-task",
+		Type:    "test",
+		Status:  task.StatusPending,
+		Timeout: 200 * time.Millisecond,
+	}
+
+	bee, err := pool.Spawn(context.Background(), tk, "test")
+	if err != nil {
+		t.Fatalf("Spawn failed: %v", err)
+	}
+
+	// Wait for timeout to fire
+	time.Sleep(500 * time.Millisecond)
+
+	if bee.Monitor() != StatusFailed {
+		t.Errorf("expected StatusFailed after timeout, got %s", bee.Monitor())
+	}
+}
+
+func TestPoolSpawnNoTimeoutCompletes(t *testing.T) {
+	factory := func(id, adapter string) (Bee, error) {
+		m := newMockBee(id, adapter)
+		m.spawnFunc = func(ctx context.Context, tk *task.Task) error {
+			go func() {
+				m.status.Store(StatusRunning)
+				time.Sleep(50 * time.Millisecond)
+				m.mu.Lock()
+				m.status.Store(StatusComplete)
+				m.result = &task.Result{Success: true, Output: "done"}
+				m.mu.Unlock()
+			}()
+			return nil
+		}
+		return m, nil
+	}
+
+	pool := NewPool(4, factory, nil)
+
+	// Task with no timeout (zero value)
+	tk := &task.Task{
+		ID:     "no-timeout-task",
+		Type:   "test",
+		Status: task.StatusPending,
+	}
+
+	bee, err := pool.Spawn(context.Background(), tk, "test")
+	if err != nil {
+		t.Fatalf("Spawn failed: %v", err)
+	}
+
+	time.Sleep(200 * time.Millisecond)
+
+	if bee.Monitor() != StatusComplete {
+		t.Errorf("expected StatusComplete, got %s", bee.Monitor())
+	}
 }

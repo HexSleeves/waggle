@@ -182,10 +182,15 @@ func (w *CLIWorker) Spawn(ctx context.Context, t *task.Task) error {
 
 		if err != nil {
 			w.status = worker.StatusFailed
-			errType := errors.ClassifyErrorWithExitCode(err, getExitCode(err))
-			errMsg := err.Error()
-			if errType == errors.ErrorTypeRetryable {
-				errMsg = fmt.Sprintf("[retryable] %s", err.Error())
+			var errMsg string
+			if ctx.Err() == context.DeadlineExceeded {
+				errMsg = "[timeout] worker killed: exceeded task deadline"
+			} else {
+				errType := errors.ClassifyErrorWithExitCode(err, getExitCode(err))
+				errMsg = err.Error()
+				if errType == errors.ErrorTypeRetryable {
+					errMsg = fmt.Sprintf("[retryable] %s", err.Error())
+				}
 			}
 			w.result = &task.Result{
 				Success: false,
