@@ -6,11 +6,11 @@
 
 - [x] **Fix session status: "stopped" vs "done"** — `Close()` now reads current status before overwriting. Terminal states preserved. 3 unit tests. *(done 2026-02-13)*
 
-- [ ] **Add fsync to JSONL event append** — `state.go` writes events without `Sync()`. OS crash loses buffered data. Either add `logFile.Sync()` after each write, or remove the JSONL store entirely now that SQLite handles persistence.
+- [x] **Remove JSONL store** — Deleted `state.go` and all `store.Append()` calls. SQLite is the sole persistence layer. *(done 2026-02-15)*
 
-- [ ] **Wrap SQLite multi-statement ops in transactions** — `db.go` methods like `UpdateTaskErrorType` do multiple UPDATEs without a transaction. Crash between them leaves inconsistent state.
+- [x] **Wrap SQLite multi-statement ops in transactions** — `UpdateTaskStatus`, `UpdateTaskErrorType`, `IncrementTaskRetry` now use `BEGIN`/`COMMIT` with rollback. *(done 2026-02-15)*
 
-- [ ] **Add context.Context to all DB methods** — Currently none of the `DB` methods accept a context, so queries can't be cancelled during shutdown.
+- [x] **Add context.Context to all DB methods** — All public `DB` methods now accept `ctx context.Context`. Uses `ExecContext`/`QueryContext`/`BeginTx` throughout. All callers updated. *(done 2026-02-15)*
 
 ## P1 — High (reliability / usability)
 
@@ -26,9 +26,9 @@
 
 - [x] **Provider-agnostic LLM client** — `llm.Client` interface with Anthropic SDK and CLI adapter backends. Factory selects by `queen.provider` config. *(done 2026-02-14)*
 
-- [ ] **Remove or deprecate JSONL store** — SQLite is now the source of truth. The JSONL store writes in parallel but nothing reads it. Remove to reduce complexity.
+- [x] **Remove or deprecate JSONL store** — Removed entirely (see P0 item above). *(done 2026-02-15)*
 
-- [ ] **Fix pre-existing test failures** — `TestErrorClassification/PanicError` (expects retry on panic) and `TestQueenRunWithResumedSession` (DB lookup mismatch). Fix the tests or underlying logic.
+- [x] **Fix pre-existing test failures** — Panics now classified as retryable (transient). Resume test fixed with correct session ID seeding. All tests green. *(done 2026-02-15)*
 
 - [ ] **Implement real session resume** — CLI now loads from SQLite, but needs end-to-end testing. Verify interrupted sessions actually resume correctly.
 
@@ -77,5 +77,5 @@
 - The Queen uses the worker adapter for planning (spawns a "planner" worker). Consider using the Queen's own LLM client for planning too, which would be faster and avoid spawning a worker process.
 - The `compact.Context` is wired into the Queen but never read for decision-making. It's write-only.
 - The blackboard is both in-memory and persisted (SQLite). On resume, in-memory starts empty.
-- The JSONL store is fully redundant with SQLite and should be removed.
+- ~~The JSONL store is fully redundant with SQLite and should be removed.~~ *(removed 2026-02-15)*
 - The Queen's `model` config field is only used when provider is `anthropic`. CLI-based providers ignore it.
