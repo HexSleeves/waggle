@@ -84,4 +84,7 @@ func TestInterfaceCompliance(t *testing.T) {
 	// Verify both implementations satisfy the Client interface
 	var _ Client = (*AnthropicClient)(nil)
 	var _ Client = (*CLIClient)(nil)
+
+	// Verify AnthropicClient satisfies ToolClient
+	var _ ToolClient = (*AnthropicClient)(nil)
 }

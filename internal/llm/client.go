@@ -15,3 +15,11 @@ type Client interface {
 	Chat(ctx context.Context, systemPrompt, userMessage string) (string, error)
 	ChatWithHistory(ctx context.Context, systemPrompt string, messages []Message) (string, error)
 }
+
+// ToolClient extends Client with tool-use capability.
+// Providers that support structured tool calls (like Anthropic) implement this.
+type ToolClient interface {
+	Client
+	ChatWithTools(ctx context.Context, systemPrompt string,
+		messages []ToolMessage, tools []ToolDef) (*Response, error)
+}
