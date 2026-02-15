@@ -58,6 +58,8 @@ type Queen struct {
 
 	llm llm.Client // LLM client for AI-backed review/replan (nil = disabled)
 
+	suppressReport bool // TUI mode: don't print report to stdout
+
 	// For tracking worker->task assignments
 	assignments  map[string]string // workerID -> taskID
 	pendingTasks []*task.Task      // pre-defined tasks (skip AI planning)
@@ -1030,6 +1032,11 @@ func (q *Queen) SetLogger(logger *log.Logger) {
 	q.logger = logger
 }
 
+// SuppressReport prevents printReport from writing to stdout (for TUI mode).
+func (q *Queen) SuppressReport() {
+	q.suppressReport = true
+}
+
 // Bus returns the Queen's message bus (used by TUI to subscribe to events).
 func (q *Queen) Bus() *bus.MessageBus {
 	return q.bus
@@ -1082,6 +1089,9 @@ func (q *Queen) waitForWorker(ctx context.Context, bee worker.Bee, timeout time.
 
 // printReport outputs a complete report of all task results
 func (q *Queen) printReport() {
+	if q.suppressReport {
+		return
+	}
 	results := q.Results()
 	if len(results) == 0 {
 		return

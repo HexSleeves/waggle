@@ -13,44 +13,67 @@ func (m Model) View() string {
 		return ""
 	}
 
-	if m.width == 0 {
-		return "Initializing...\n"
+	w := m.width
+	if w < 40 {
+		w = 80 // sensible default before WindowSizeMsg
+	}
+	h := m.height
+	if h < 10 {
+		h = 24
 	}
 
-	w := m.width
+	// Dynamic layout: give task panel only what it needs, queen gets the rest
+	taskRows := len(m.tasks)
+	if taskRows == 0 {
+		taskRows = 1
+	}
+	taskH := taskRows + 3 // rows + title + border padding
+	if taskH > h/3 {
+		taskH = h / 3 // cap at 1/3 of screen
+	}
 
-	// Layout: Queen panel (top, ~50%), Tasks panel (middle), Status bar (bottom)
-	queenH := m.height/2 - 2
+	statusH := 1
+	queenH := h - taskH - statusH - 4 // borders eat ~4 lines
 	if queenH < 5 {
 		queenH = 5
 	}
-	taskH := m.height - queenH - 4 // 4 = status bar + borders
-	if taskH < 3 {
-		taskH = 3
-	}
 
-	queenPanel := m.renderQueenPanel(w-4, queenH)
-	taskPanel := m.renderTaskPanel(w-4, taskH)
+	innerW := w - 2 // border eats 2 chars
+
+	queenPanel := m.renderQueenPanel(innerW, queenH)
+	taskPanel := m.renderTaskPanel(innerW, taskH)
 	sbar := m.renderStatusBar(w)
 
 	return queenPanel + "\n" + taskPanel + "\n" + sbar
 }
 
 func (m Model) renderQueenPanel(w, h int) string {
+	// Title with scroll indicator
 	title := titleStyle.Render("👑 Queen")
 	if m.turn > 0 {
-		title += subtleStyle.Render(fmt.Sprintf(" — turn %d/%d", m.turn, m.maxTurn))
+		title += subtleStyle.Render(fmt.Sprintf("  turn %d/%d", m.turn, m.maxTurn))
 	}
 
-	// Get visible lines (accounting for scroll)
-	lines := m.queenLines
-	visibleH := h - 1 // -1 for title
+	totalLines := len(m.queenLines)
+	visibleH := h - 1 // title takes 1 line
 	if visibleH < 1 {
 		visibleH = 1
 	}
 
-	// Apply scroll from bottom
-	end := len(lines) - m.queenScroll
+	// Scroll indicator
+	if m.queenScroll > 0 {
+		title += subtleStyle.Render(fmt.Sprintf("  [↑%d more]", m.queenScroll))
+	}
+	if totalLines > visibleH+m.queenScroll {
+		above := totalLines - visibleH - m.queenScroll
+		title += subtleStyle.Render(fmt.Sprintf("  [↑%d above]", above))
+	}
+
+	// Compute visible window
+	end := totalLines - m.queenScroll
+	if end > totalLines {
+		end = totalLines
+	}
 	if end < 0 {
 		end = 0
 	}
@@ -58,31 +81,31 @@ func (m Model) renderQueenPanel(w, h int) string {
 	if start < 0 {
 		start = 0
 	}
-	if end > len(lines) {
-		end = len(lines)
-	}
 
 	var rendered []string
-	for _, line := range lines[start:end] {
-		text := line.text
-		if len(text) > w-2 {
-			text = text[:w-5] + "..."
-		}
-		switch line.style {
-		case "think":
-			rendered = append(rendered, queenTextStyle.Render(text))
-		case "tool":
-			rendered = append(rendered, toolCallStyle.Render(text))
-		case "result":
-			rendered = append(rendered, toolResultStyle.Render(text))
-		case "error":
-			rendered = append(rendered, errorStyle.Render(text))
-		default:
-			rendered = append(rendered, subtleStyle.Render(text))
+	for _, line := range m.queenLines[start:end] {
+		// Word-wrap long lines instead of truncating
+		wrapped := wrapText(line.text, w-2)
+		for _, wl := range wrapped {
+			switch line.style {
+			case "think":
+				rendered = append(rendered, queenTextStyle.Render(wl))
+			case "tool":
+				rendered = append(rendered, toolCallStyle.Render(wl))
+			case "result":
+				rendered = append(rendered, toolResultStyle.Render(wl))
+			case "error":
+				rendered = append(rendered, errorStyle.Render(wl))
+			default:
+				rendered = append(rendered, subtleStyle.Render(wl))
+			}
 		}
 	}
 
-	// Pad to fill height
+	// Trim to fit and pad
+	if len(rendered) > visibleH {
+		rendered = rendered[len(rendered)-visibleH:]
+	}
 	for len(rendered) < visibleH {
 		rendered = append(rendered, "")
 	}
@@ -95,15 +118,12 @@ func (m Model) renderTaskPanel(w, h int) string {
 	title := titleStyle.Render("📋 Tasks")
 
 	if len(m.tasks) == 0 {
-		content := title + "\n" + subtleStyle.Render("  No tasks yet...")
-		for i := 0; i < h-2; i++ {
-			content += "\n"
-		}
+		content := title + "\n" + subtleStyle.Render("  Waiting for Queen to create tasks...")
 		return taskBorder.Width(w).Render(content)
 	}
 
-	// Count stats
-	done, running, pending, failed := 0, 0, 0, 0
+	// Stats
+	done, running, failed := 0, 0, 0
 	for _, t := range m.tasks {
 		switch t.Status {
 		case "complete":
@@ -112,112 +132,130 @@ func (m Model) renderTaskPanel(w, h int) string {
 			running++
 		case "failed":
 			failed++
-		default:
-			pending++
 		}
 	}
-	stats := subtleStyle.Render(fmt.Sprintf(" — %d/%d done", done, len(m.tasks)))
+
+	stats := subtleStyle.Render(fmt.Sprintf("  %d/%d", done, len(m.tasks)))
 	if running > 0 {
-		stats += lipgloss.NewStyle().Foreground(colorBlue).Render(fmt.Sprintf(" · %d running", running))
+		stats += lipgloss.NewStyle().Foreground(colorBlue).Render(fmt.Sprintf(" · %d🔄", running))
 	}
 	if failed > 0 {
-		stats += errorStyle.Render(fmt.Sprintf(" · %d failed", failed))
+		stats += errorStyle.Render(fmt.Sprintf(" · %d❌", failed))
 	}
 
-	// Header
-	headerLine := title + stats
+	// Column widths
+	titleW := w - 30 // leave room for status + worker
+	if titleW < 20 {
+		titleW = 20
+	}
 
-	// Task rows
 	var rows []string
-	maxRows := h - 2 // -2 for title and header
+	maxRows := h - 2
 	if maxRows < 1 {
 		maxRows = 1
-	}
-
-	// Determine column widths
-	idW := 12
-	statusW := 3
-	workerW := 10
-	titleW := w - idW - statusW - workerW - 10 // padding/separators
-	if titleW < 10 {
-		titleW = 10
 	}
 
 	for i, t := range m.tasks {
 		if i >= maxRows {
 			remaining := len(m.tasks) - maxRows
-			rows = append(rows, subtleStyle.Render(fmt.Sprintf("  ... +%d more tasks", remaining)))
+			rows = append(rows, subtleStyle.Render(fmt.Sprintf("  +%d more", remaining)))
 			break
 		}
 
 		icon := statusIcon(t.Status)
 		style := statusStyle(t.Status)
 
-		id := t.ID
-		if len(id) > idW {
-			id = id[:idW-1] + "…"
-		}
-
 		taskTitle := t.Title
+		if taskTitle == "" {
+			taskTitle = t.ID
+		}
 		if len(taskTitle) > titleW {
 			taskTitle = taskTitle[:titleW-1] + "…"
 		}
 
-		worker := t.WorkerID
-		if worker == "" {
-			worker = "—"
-		}
-		if len(worker) > workerW {
-			worker = worker[:workerW-1] + "…"
+		worker := ""
+		if t.WorkerID != "" {
+			// Shorten worker ID: "worker-code-123456" -> "w-123456"
+			wid := t.WorkerID
+			if len(wid) > 12 {
+				wid = "w-" + wid[len(wid)-6:]
+			}
+			worker = subtleStyle.Render(wid)
 		}
 
-		row := fmt.Sprintf("  %s %s %s %s",
+		row := fmt.Sprintf("  %s %s  %s",
 			icon,
-			style.Render(fmt.Sprintf("%-*s", idW, id)),
-			fmt.Sprintf("%-*s", titleW, taskTitle),
-			subtleStyle.Render(worker),
+			style.Render(fmt.Sprintf("%-*s", titleW, taskTitle)),
+			worker,
 		)
 		rows = append(rows, row)
 	}
 
-	// Pad
-	for len(rows) < maxRows {
-		rows = append(rows, "")
-	}
-
-	content := headerLine + "\n" + strings.Join(rows, "\n")
+	content := title + stats + "\n" + strings.Join(rows, "\n")
 	return taskBorder.Width(w).Render(content)
 }
 
 func (m Model) renderStatusBar(w int) string {
 	elapsed := time.Since(m.startTime).Round(time.Second)
 
-	// Left side: objective
-	left := "🐝 "
+	// Left: status + objective
+	var left string
 	if m.done {
 		if m.success {
-			left += successStyle.Render("✓ Complete")
+			left = "🐝 " + successStyle.Render("✓ Complete")
 		} else {
-			left += errorStyle.Render("✗ Failed")
+			left = "🐝 " + errorStyle.Render("✗ Failed")
 		}
+		left += subtleStyle.Render("  press any key to exit")
 	} else {
 		obj := m.objective
-		if len(obj) > w/2 {
-			obj = obj[:w/2-3] + "..."
+		maxObj := w/2 - 5
+		if maxObj > 0 && len(obj) > maxObj {
+			obj = obj[:maxObj] + "…"
 		}
-		left += obj
+		left = "🐝 " + obj
 	}
 
-	// Right side: stats
+	// Right: workers + time
 	workerCount := len(m.workers)
 	right := fmt.Sprintf("%d workers · %s", workerCount, elapsed)
 
-	// Fill middle with spaces
-	midW := w - lipgloss.Width(left) - lipgloss.Width(right) - 4
-	if midW < 1 {
-		midW = 1
+	// Spacing
+	leftW := lipgloss.Width(left)
+	rightW := lipgloss.Width(right)
+	gap := w - leftW - rightW - 2
+	if gap < 1 {
+		gap = 1
 	}
 
-	bar := left + strings.Repeat(" ", midW) + subtleStyle.Render(right)
-	return statusBar.Width(w).Render(bar)
+	bar := left + strings.Repeat(" ", gap) + subtleStyle.Render(right)
+	return statusBar.Width(w - 2).Render(bar)
+}
+
+// wrapText wraps a string to fit within maxWidth, splitting on word boundaries.
+func wrapText(text string, maxWidth int) []string {
+	if maxWidth <= 0 {
+		maxWidth = 80
+	}
+	if len(text) == 0 {
+		return []string{""}
+	}
+	if len(text) <= maxWidth {
+		return []string{text}
+	}
+
+	var lines []string
+	for len(text) > maxWidth {
+		// Find last space before maxWidth
+		cut := maxWidth
+		if idx := strings.LastIndex(text[:maxWidth], " "); idx > maxWidth/3 {
+			cut = idx
+		}
+		lines = append(lines, text[:cut])
+		text = strings.TrimLeft(text[cut:], " ")
+	}
+	if text != "" {
+		lines = append(lines, text)
+	}
+	return lines
 }

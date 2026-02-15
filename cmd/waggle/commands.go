@@ -129,8 +129,9 @@ func runWithTUI(ctx context.Context, cfg *config.Config, objective, tasksFile st
 		return fmt.Errorf("init queen: %w", err)
 	}
 
-	// Redirect the queen's logger to TUI
+	// Redirect the queen's logger to TUI and suppress direct stdout
 	q.SetLogger(logger)
+	q.SuppressReport()
 
 	// Subscribe to bus events for task/worker updates
 	q.Bus().Subscribe(bus.MsgTaskCreated, func(msg bus.Message) {

@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"fmt"
+	"strings"
 	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -76,7 +78,7 @@ func New(objective string, maxTurns int) Model {
 }
 
 func (m Model) Init() tea.Cmd {
-	return tickCmd()
+	return tea.Batch(tickCmd(), tea.WindowSize())
 }
 
 func tickCmd() tea.Cmd {
@@ -135,17 +137,27 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.queenScroll = 0
 
 	case ToolResultMsg:
-		prefix := "✓ "
 		style := "result"
 		if msg.IsError {
-			prefix = "✗ "
 			style = "error"
 		}
-		result := msg.Result
-		if len(result) > 120 {
-			result = result[:120] + "..."
+		// Split multiline results into separate lines
+		result := strings.TrimSpace(msg.Result)
+		lines := strings.Split(result, "\n")
+		if len(lines) > 8 {
+			// Summarize very long results
+			for _, l := range lines[:6] {
+				m.addQueenLine("  "+strings.TrimSpace(l), style)
+			}
+			m.addQueenLine(fmt.Sprintf("  ... (%d more lines)", len(lines)-6), "info")
+		} else {
+			for _, l := range lines {
+				l = strings.TrimSpace(l)
+				if l != "" {
+					m.addQueenLine("  "+l, style)
+				}
+			}
 		}
-		m.addQueenLine(prefix+msg.Name+": "+result, style)
 		m.queenScroll = 0
 
 	case TaskUpdateMsg:
@@ -169,10 +181,10 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.finalMsg = msg.Summary
 			m.addQueenLine("✅ "+msg.Summary, "info")
 		}
-		// Give user a moment to see the result, then quit
-		return m, tea.Tick(3*time.Second, func(t time.Time) tea.Msg {
-			return tea.KeyMsg{}
-		})
+		m.addQueenLine("", "info")
+		m.addQueenLine("Press any key to exit...", "info")
+		// Keep ticking so the view stays rendered
+		return m, tickCmd()
 
 	case LogMsg:
 		m.addQueenLine(msg.Text, "info")

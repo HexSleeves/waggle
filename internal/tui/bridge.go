@@ -57,21 +57,6 @@ func (p *Program) Send(msg tea.Msg) {
 	p.program.Send(msg)
 }
 
-// SendQueenThinking sends a Queen thinking line.
-func (p *Program) SendQueenThinking(text string) {
-	p.Send(QueenThinkingMsg{Text: text})
-}
-
-// SendToolCall sends a tool call event.
-func (p *Program) SendToolCall(name, input string) {
-	p.Send(ToolCallMsg{Name: name, Input: input})
-}
-
-// SendToolResult sends a tool result event.
-func (p *Program) SendToolResult(name, result string, isError bool) {
-	p.Send(ToolResultMsg{Name: name, Result: result, IsError: isError})
-}
-
 // SendTaskUpdate sends a task status change.
 func (p *Program) SendTaskUpdate(id, title, taskType, status, workerID string) {
 	p.Send(TaskUpdateMsg{
@@ -80,19 +65,9 @@ func (p *Program) SendTaskUpdate(id, title, taskType, status, workerID string) {
 	})
 }
 
-// SendTurn sends a turn update.
-func (p *Program) SendTurn(turn, maxTurn int) {
-	p.Send(TurnMsg{Turn: turn, MaxTurn: maxTurn})
-}
-
 // SendDone sends the completion message.
 func (p *Program) SendDone(success bool, summary, errMsg string) {
 	p.Send(DoneMsg{Success: success, Summary: summary, Error: errMsg})
-}
-
-// SendLog sends a raw log line.
-func (p *Program) SendLog(text string) {
-	p.Send(LogMsg{Text: text})
 }
 
 // LogWriter returns an io.Writer that sends each line to the TUI as a LogMsg.
@@ -130,50 +105,82 @@ func (w *tuiWriter) Write(data []byte) (int, error) {
 }
 
 func (w *tuiWriter) routeLine(line string) {
+	// Skip empty/decoration lines
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || strings.HasPrefix(trimmed, "━━━") {
+		return
+	}
+
 	switch {
 	case strings.Contains(line, "👑 Queen:"):
-		text := strings.TrimPrefix(line, "👑 Queen: ")
-		w.p.SendQueenThinking(text)
-	case strings.Contains(line, "🔧 Tool:"):
-		name := strings.TrimSpace(strings.TrimPrefix(line, "  🔧 Tool: "))
-		w.p.SendToolCall(name, "")
-	case strings.Contains(line, "✓ Result:"):
-		result := strings.TrimSpace(strings.TrimPrefix(line, "  ✓ Result: "))
-		w.p.SendToolResult("", result, false)
-	case strings.Contains(line, "⚠ Tool error:"):
-		errText := strings.TrimSpace(strings.TrimPrefix(line, "  ⚠ Tool error: "))
-		w.p.SendToolResult("", errText, true)
-	case strings.Contains(line, "Agent Turn"):
-		// Parse turn from "━━━ Agent Turn 3/50 ━━━"
-		var turn, maxTurn int
-		fmt.Sscanf(line, "%*[^0-9]%d/%d", &turn, &maxTurn)
-		if turn > 0 {
-			w.p.SendTurn(turn, maxTurn)
+		// Extract just the Queen's text
+		if idx := strings.Index(line, "👑 Queen: "); idx != -1 {
+			text := line[idx+len("👑 Queen: "):]
+			w.p.Send(QueenThinkingMsg{Text: text})
 		}
-	case strings.Contains(line, "✅") || strings.Contains(line, "❌") ||
-		strings.Contains(line, "⚠") || strings.Contains(line, "✓") ||
-		strings.Contains(line, "🐝") || strings.Contains(line, "⚙"):
-		w.p.SendLog(line)
+
+	case strings.Contains(line, "🔧 Tool:"):
+		if idx := strings.Index(line, "🔧 Tool: "); idx != -1 {
+			name := strings.TrimSpace(line[idx+len("🔧 Tool: "):])
+			w.p.Send(ToolCallMsg{Name: name})
+		}
+
+	case strings.Contains(line, "✓ Result:"):
+		if idx := strings.Index(line, "✓ Result: "); idx != -1 {
+			result := strings.TrimSpace(line[idx+len("✓ Result: "):])
+			w.p.Send(ToolResultMsg{Result: result})
+		}
+
+	case strings.Contains(line, "⚠ Tool error:"):
+		if idx := strings.Index(line, "⚠ Tool error: "); idx != -1 {
+			errText := strings.TrimSpace(line[idx+len("⚠ Tool error: "):])
+			w.p.Send(ToolResultMsg{Result: errText, IsError: true})
+		}
+
+	case strings.Contains(line, "Agent Turn"):
+		var turn, maxTurn int
+		if _, err := fmt.Sscanf(trimmed, "Agent Turn %d/%d", &turn, &maxTurn); err == nil && turn > 0 {
+			w.p.Send(TurnMsg{Turn: turn, MaxTurn: maxTurn})
+		}
+
+	// Filter out noisy/redundant lines
+	case strings.Contains(line, "Iteration ") && strings.Contains(line, "Phase:"):
+		// skip legacy loop iteration headers
+	case strings.HasPrefix(trimmed, "Available adapters:"):
+		// skip adapter list (shown in startup)
+	case trimmed == "":
+		// skip blank lines
+
 	default:
-		w.p.SendLog(line)
+		w.p.Send(LogMsg{Text: trimmed})
 	}
 }
 
-// stripLogPrefix removes the standard log prefix "2026/02/14 20:30:59 "
+// stripLogPrefix removes Go log prefixes like "2026/02/14 20:30:59 " or timestamps.
 func stripLogPrefix(line string) string {
-	// Standard log format: "2006/01/02 15:04:05 <message>"
-	if len(line) > 20 && line[4] == '/' && line[7] == '/' && line[10] == ' ' {
+	// Standard: "2006/01/02 15:04:05 msg"
+	if len(line) >= 20 && line[4] == '/' && line[7] == '/' && line[10] == ' ' &&
+		line[13] == ':' && line[16] == ':' {
+		// Check if microseconds follow: "2006/01/02 15:04:05.000000 msg"
+		if len(line) > 26 && line[19] == '.' {
+			// Find the space after the microseconds
+			for i := 20; i < len(line) && i < 30; i++ {
+				if line[i] == ' ' {
+					return strings.TrimSpace(line[i+1:])
+				}
+			}
+		}
 		return strings.TrimSpace(line[20:])
 	}
-	// With microseconds: "2006/01/02 15:04:05.000000 <message>"
-	if len(line) > 27 && line[4] == '/' && line[7] == '/' && line[19] == '.' {
-		return strings.TrimSpace(line[27:])
-	}
-	// Tagged: "[TEST] 2006/01/02 15:04:05 <message>"
-	if strings.HasPrefix(line, "[") {
-		if idx := strings.Index(line, "] "); idx != -1 {
+	// Tagged: "[TAG] 2006/01/02 ..."
+	if len(line) > 0 && line[0] == '[' {
+		if idx := strings.Index(line, "] "); idx != -1 && idx < 20 {
 			return stripLogPrefix(line[idx+2:])
 		}
+	}
+	// Bare timestamp at start: "20:30:59 msg" (time only)
+	if len(line) >= 9 && line[2] == ':' && line[5] == ':' && line[8] == ' ' {
+		return strings.TrimSpace(line[9:])
 	}
 	return strings.TrimSpace(line)
 }
