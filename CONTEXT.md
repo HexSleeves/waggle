@@ -10,7 +10,7 @@ Think of it as a task runner where the tasks are executed by AI coding agents in
 
 ## Architecture
 
-```
+```bash
 User Objective
        │
    ┌───▼───┐
@@ -50,9 +50,11 @@ User Objective
 ## Two Execution Modes
 
 ### Agent Mode (default when provider supports tools)
+
 The Queen runs as an autonomous tool-using LLM agent. She receives the objective, and the Go code just executes tool calls and feeds results back. The Queen decides what tools to call and when: `create_tasks`, `assign_task`, `wait_for_workers`, `get_task_output`, `approve_task`, `reject_task`, `read_file`, `list_files`, `complete`, `fail`.
 
 ### Legacy Mode (fallback / `--legacy` flag)
+
 The structured Plan → Delegate → Monitor → Review → Replan loop. The Queen's LLM is called at specific phases (planning, review, replan) with structured prompts.
 
 ## Module Map
@@ -90,6 +92,7 @@ The structured Plan → Delegate → Monitor → Review → Replan loop. The Que
 ## Key Interfaces
 
 ### `worker.Bee` — What every worker must implement
+
 ```go
 type Bee interface {
     ID() string
@@ -103,6 +106,7 @@ type Bee interface {
 ```
 
 ### `adapter.Adapter` — How CLIs are wrapped
+
 ```go
 type Adapter interface {
     Name() string
@@ -112,6 +116,7 @@ type Adapter interface {
 ```
 
 ### `llm.Client` — Provider-agnostic LLM interface
+
 ```go
 type Client interface {
     Chat(ctx context.Context, systemPrompt, userMessage string) (string, error)
@@ -120,6 +125,7 @@ type Client interface {
 ```
 
 ### `llm.ToolClient` — LLM with tool-use support (extends Client)
+
 ```go
 type ToolClient interface {
     Client
@@ -148,6 +154,7 @@ Implementations: `AnthropicClient`, `OpenAIClient`, `GeminiClient` (all tool-cap
 ## TUI Dashboard
 
 Bubble Tea-based terminal UI with three panels:
+
 - **Queen Panel** — Real-time display of Queen's thinking, tool calls, and results. Scrollable with j/k or arrow keys.
 - **Task Panel** — Task list with status icons (⏳ pending, 🔄 running, ✅ complete, ❌ failed), worker assignments.
 - **Status Bar** — Elapsed time, active worker count, completion status.
@@ -159,6 +166,7 @@ The bridge (`tui/bridge.go`) routes log output from the Queen into structured TU
 ## Provider Selection
 
 Configured via `waggle.json`:
+
 ```json
 {"queen": {"provider": "anthropic"}}   // Anthropic API (tool-use, needs ANTHROPIC_API_KEY)
 {"queen": {"provider": "openai"}}      // OpenAI API (tool-use, needs OPENAI_API_KEY)
@@ -168,6 +176,7 @@ Configured via `waggle.json`:
 {"queen": {"provider": "claude-cli"}}  // Claude CLI (no tool-use, legacy mode)
 {"queen": {"provider": "opencode"}}    // OpenCode CLI (no tool-use, legacy mode)
 ```
+
 No provider = review/replan disabled, legacy exit-code-based behavior.
 
 ## Task Router
@@ -185,6 +194,7 @@ Three layers control what workers can and cannot do:
 ## Safety Guard
 
 The `safety.Guard` is wired into all adapter constructors and enforced at spawn time:
+
 - `ValidateTaskPaths()` — checks task's allowed_paths against the guard's allowlist
 - `CheckCommand()` — scans task description/script for blocked commands
 - `IsReadOnly()` — prepends read-only warning to worker prompts when enabled
@@ -198,6 +208,7 @@ The `safety.Guard` is wired into all adapter constructors and enforced at spawn 
 ```
 
 ### SQLite Schema
+
 - **sessions** — one row per `waggle run` invocation (id, objective, status, phase, iteration, timestamps)
 - **events** — append-only event log indexed by session + type
 - **tasks** — full task state (status, worker_id, result JSON, result_data, retries, deps)
@@ -214,10 +225,27 @@ waggle --adapter exec --tasks f.json run "<obj>"  # Pre-defined tasks
 waggle --workers 8 run "<obj>"        # Set parallelism
 waggle --plain run "<obj>"            # Force plain log output (no TUI)
 waggle --legacy run "<obj>"           # Force legacy orchestration loop
+waggle --quiet run "<obj>"            # Suppress all output except errors
+waggle --json run "<obj>"             # Output results as JSON (for scripting)
 waggle status                         # Show current/last session
 waggle config                         # Show configuration
 waggle resume <session-id>            # Resume interrupted session
 ```
+
+### Output Modes
+
+| Flag | Description | Use Case |
+|------|-------------|----------|
+| `--plain` | Plain text log output, no TUI | Non-TTY environments, simpler logs |
+| `--quiet` | Suppress progress output, only errors/final result | CI pipelines, minimal output |
+| `--json` | Machine-readable JSON output with structured results | Scripting, integration with other tools |
+
+**When to use each mode:**
+
+- **Interactive (default TUI)**: Best for local development — real-time dashboard showing Queen reasoning, task progress, and worker status
+- **Plain**: When you want readable logs without the interactive interface, or when piping output
+- **Quiet**: For CI/CD pipelines where you only care about success/failure and final results
+- **JSON**: When integrating with other tools or scripts that need to parse task results programmatically
 
 ## Configuration (`waggle.json`)
 
@@ -299,6 +327,6 @@ waggle resume <session-id>            # Resume interrupted session
 
 ## Repository
 
-- GitHub: https://github.com/HexSleeves/waggle
+- GitHub: <https://github.com/HexSleeves/waggle>
 - 41 commits on `main`
 - No branches, no CI, no releases

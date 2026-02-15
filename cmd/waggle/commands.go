@@ -12,6 +12,7 @@ import (
 
 	"github.com/exedev/waggle/internal/bus"
 	"github.com/exedev/waggle/internal/config"
+	"github.com/exedev/waggle/internal/output"
 	"github.com/exedev/waggle/internal/queen"
 	"github.com/exedev/waggle/internal/state"
 	"github.com/exedev/waggle/internal/task"
@@ -107,6 +108,12 @@ func runObjective(ctx context.Context, cmd *cli.Command, objective string) error
 	tasksFile := cmd.String("tasks")
 	forceLegacy := cmd.Bool("legacy")
 	forcePlain := cmd.Bool("plain")
+	forceJSON := cmd.Bool("json")
+
+	// JSON mode takes precedence
+	if forceJSON {
+		return runJSON(ctx, cmd, cfg, objective, tasksFile, forceLegacy)
+	}
 
 	// Decide: TUI or plain mode
 	isTTY := term.IsTerminal(int(os.Stdout.Fd()))
@@ -306,21 +313,25 @@ func runPlain(ctx context.Context, cmd *cli.Command, cfg *config.Config, objecti
 	logger := log.New(os.Stderr, "", log.LstdFlags)
 
 	verbose := cmd.Bool("verbose")
+	quiet := cmd.Bool("quiet")
 	if verbose {
 		logger.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	}
 
-	fmt.Println("")
-	fmt.Println("══════════════════════════════════════════════════")
-	fmt.Println("  Waggle - Agent Orchestration System")
-	fmt.Println("══════════════════════════════════════════════════")
-	fmt.Printf("  Objective: %s\n", objective)
-	fmt.Printf("  Adapter:   %s\n", cfg.Workers.DefaultAdapter)
-	fmt.Printf("  Workers:   %d max parallel\n", cfg.Workers.MaxParallel)
-	if cfg.Queen.Provider != "" {
-		fmt.Printf("  Queen LLM: %s (%s)\n", cfg.Queen.Provider, cfg.Queen.Model)
+	// Suppress banner in quiet mode
+	if !quiet {
+		fmt.Println("")
+		fmt.Println("══════════════════════════════════════════════════")
+		fmt.Println("  Waggle - Agent Orchestration System")
+		fmt.Println("══════════════════════════════════════════════════")
+		fmt.Printf("  Objective: %s\n", objective)
+		fmt.Printf("  Adapter:   %s\n", cfg.Workers.DefaultAdapter)
+		fmt.Printf("  Workers:   %d max parallel\n", cfg.Workers.MaxParallel)
+		if cfg.Queen.Provider != "" {
+			fmt.Printf("  Queen LLM: %s (%s)\n", cfg.Queen.Provider, cfg.Queen.Model)
+		}
+		fmt.Println("")
 	}
-	fmt.Println("")
 
 	q, err := queen.New(cfg, logger)
 	if err != nil {
@@ -328,13 +339,18 @@ func runPlain(ctx context.Context, cmd *cli.Command, cfg *config.Config, objecti
 	}
 	defer q.Close()
 
+	// Propagate quiet flag to Queen
+	q.SetQuiet(quiet)
+
 	if tasksFile != "" {
 		tasks, err := loadTasksFile(tasksFile, cfg)
 		if err != nil {
 			return fmt.Errorf("load tasks file: %w", err)
 		}
 		q.SetTasks(tasks)
-		logger.Printf("Loaded %d tasks from %s", len(tasks), tasksFile)
+		if !quiet {
+			logger.Printf("Loaded %d tasks from %s", len(tasks), tasksFile)
+		}
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
@@ -350,19 +366,27 @@ func runPlain(ctx context.Context, cmd *cli.Command, cfg *config.Config, objecti
 
 	var runErr error
 	if !forceLegacy && q.SupportsAgentMode() {
-		logger.Println("✓ Agent mode: Queen will use tools autonomously")
+		if !quiet {
+			logger.Println("✓ Agent mode: Queen will use tools autonomously")
+		}
 		runErr = q.RunAgent(runCtx, objective)
 	} else {
 		if forceLegacy {
-			logger.Println("⚙ Legacy mode (--legacy flag)")
+			if !quiet {
+				logger.Println("⚙ Legacy mode (--legacy flag)")
+			}
 		} else {
 			provider := cfg.Queen.Provider
 			if provider == "" {
-				logger.Println("⚙ Legacy mode (no queen.provider configured)")
-				logger.Println("  💡 Set queen.provider to \"anthropic\" in waggle.json for agent mode")
+				if !quiet {
+					logger.Println("⚙ Legacy mode (no queen.provider configured)")
+					logger.Println("  💡 Set queen.provider to \"anthropic\" in waggle.json for agent mode")
+				}
 			} else {
-				logger.Printf("⚙ Legacy mode (provider %q is CLI-based, no tool support)", provider)
-				logger.Println("  💡 For agent mode, set queen.provider to \"anthropic\" (requires ANTHROPIC_API_KEY)")
+				if !quiet {
+					logger.Printf("⚙ Legacy mode (provider %q is CLI-based, no tool support)", provider)
+					logger.Println("  💡 For agent mode, set queen.provider to \"anthropic\" (requires ANTHROPIC_API_KEY)")
+				}
 			}
 		}
 		runErr = q.Run(runCtx, objective)
@@ -371,10 +395,190 @@ func runPlain(ctx context.Context, cmd *cli.Command, cfg *config.Config, objecti
 		return fmt.Errorf("queen failed: %w", runErr)
 	}
 
-	fmt.Println("")
-	fmt.Println("══════════════════════════════════════════════════")
-	fmt.Println("  Mission Complete")
-	fmt.Println("══════════════════════════════════════════════════")
+	if !quiet {
+		fmt.Println("")
+		fmt.Println("══════════════════════════════════════════════════")
+		fmt.Println("  Mission Complete")
+		fmt.Println("══════════════════════════════════════════════════")
+	}
+	return nil
+}
+
+func runJSON(ctx context.Context, cmd *cli.Command, cfg *config.Config, objective, tasksFile string, forceLegacy bool) error {
+	// Create JSON writer for structured output
+	jsonWriter := output.NewJSONWriter(os.Stdout, "")
+
+	// Emit session start event
+	err := jsonWriter.WriteSessionStart(objective, map[string]interface{}{
+		"adapter":     cfg.Workers.DefaultAdapter,
+		"max_workers": cfg.Workers.MaxParallel,
+		"provider":    cfg.Queen.Provider,
+		"model":       cfg.Queen.Model,
+	})
+	if err != nil {
+		return fmt.Errorf("json output: %w", err)
+	}
+
+	// Logger writes to stderr (not stdout, to keep stdout valid JSON)
+	logger := log.New(os.Stderr, "", log.LstdFlags)
+
+	verbose := cmd.Bool("verbose")
+	if verbose {
+		logger.SetFlags(log.LstdFlags | log.Lmicroseconds)
+	}
+
+	q, err := queen.New(cfg, logger)
+	if err != nil {
+		_ = jsonWriter.WriteError(fmt.Sprintf("init queen: %v", err), "", "", "initialization_error")
+		return fmt.Errorf("init queen: %w", err)
+	}
+	defer q.Close()
+
+	// Suppress report output in JSON mode (we emit our own JSON summary)
+	q.SuppressReport()
+
+	// Update session ID in JSON writer once available
+	// Note: session ID is created during Run/RunAgent
+
+	if tasksFile != "" {
+		tasks, err := loadTasksFile(tasksFile, cfg)
+		if err != nil {
+			_ = jsonWriter.WriteError(fmt.Sprintf("load tasks file: %v", err), "", "", "file_error")
+			return fmt.Errorf("load tasks file: %w", err)
+		}
+		q.SetTasks(tasks)
+		logger.Printf("Loaded %d tasks from %s", len(tasks), tasksFile)
+	}
+
+	// Subscribe to bus events for JSON output
+	q.Bus().Subscribe(bus.MsgTaskCreated, func(msg bus.Message) {
+		if t, ok := msg.Payload.(*task.Task); ok {
+			_ = jsonWriter.WriteTaskCreated(t)
+		}
+	})
+	q.Bus().Subscribe(bus.MsgTaskStatusChanged, func(msg bus.Message) {
+		if payload, ok := msg.Payload.(map[string]task.Status); ok {
+			_ = jsonWriter.WriteTaskUpdated(msg.TaskID, string(payload["new"]), "")
+		}
+	})
+	q.Bus().Subscribe(bus.MsgTaskAssigned, func(msg bus.Message) {
+		_ = jsonWriter.WriteTaskUpdated(msg.TaskID, "running", msg.WorkerID)
+	})
+	q.Bus().Subscribe(bus.MsgWorkerSpawned, func(msg bus.Message) {
+		_ = jsonWriter.WriteWorkerSpawned(msg.WorkerID, msg.TaskID)
+	})
+	q.Bus().Subscribe(bus.MsgWorkerCompleted, func(msg bus.Message) {
+		if t, ok := q.Bus().History(1)[0].Payload.(*task.Task); ok {
+			_ = jsonWriter.WriteTaskCompleted(t)
+		}
+		// Capture final worker output
+		for wid, out := range q.ActiveWorkerOutputs() {
+			if out != "" {
+				_ = jsonWriter.WriteWorkerOutput(wid, out)
+			}
+		}
+	})
+	q.Bus().Subscribe(bus.MsgWorkerFailed, func(msg bus.Message) {
+		// Capture final worker output before cleanup
+		for wid, out := range q.ActiveWorkerOutputs() {
+			if out != "" {
+				_ = jsonWriter.WriteWorkerOutput(wid, out)
+			}
+		}
+	})
+
+	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	sigs := make(chan os.Signal, 1)
+	signal.Notify(sigs, syscall.SIGINT, syscall.SIGTERM)
+	go func() {
+		<-sigs
+		logger.Println("\nReceived shutdown signal, gracefully stopping...")
+		_ = jsonWriter.WriteError("shutdown signal received", "", "", "interrupted")
+		cancel()
+	}()
+
+	var runErr error
+	if !forceLegacy && q.SupportsAgentMode() {
+		logger.Println("Agent mode: Queen will use tools autonomously")
+		runErr = q.RunAgent(runCtx, objective)
+	} else {
+		runErr = q.Run(runCtx, objective)
+	}
+
+	// Get session ID from queen for final output
+	status := q.Status()
+	if sessionID, ok := status["session_id"].(string); ok && sessionID != "" {
+		jsonWriter.SetSessionID(sessionID)
+	}
+
+	// Build final summary
+	allTasks := q.Results()
+	completedCount := 0
+	failedCount := 0
+	var taskEvents []output.TaskEvent
+
+	for _, tr := range allTasks {
+		if tr.Status == task.StatusComplete {
+			completedCount++
+		} else if tr.Status == task.StatusFailed {
+			failedCount++
+		}
+
+		te := output.TaskEvent{
+			TaskID:      tr.ID,
+			Title:       tr.Title,
+			Type:        string(tr.Type),
+			Status:      string(tr.Status),
+			WorkerID:    tr.WorkerID,
+			CompletedAt: tr.CompletedAt,
+		}
+		if tr.Result != nil {
+			resultOutput := tr.Result.Output
+			if len(resultOutput) > 10000 {
+				resultOutput = resultOutput[:10000] + "... [truncated]"
+			}
+			te.Result = &output.TaskResult{
+				Success:   tr.Result.Success,
+				Output:    resultOutput,
+				Errors:    tr.Result.Errors,
+				Artifacts: tr.Result.Artifacts,
+				Metrics:   tr.Result.Metrics,
+			}
+		}
+		taskEvents = append(taskEvents, te)
+	}
+
+	iterations := 0
+	if iter, ok := status["iteration"].(int); ok {
+		iterations = iter
+	}
+
+	sessionStatus := "done"
+	if runErr != nil {
+		sessionStatus = "failed"
+	}
+
+	summary := output.SessionSummary{
+		Objective:      objective,
+		Status:         sessionStatus,
+		TotalTasks:     len(allTasks),
+		CompletedTasks: completedCount,
+		FailedTasks:    failedCount,
+		Iterations:     iterations,
+		Tasks:          taskEvents,
+	}
+
+	// Emit final session summary
+	if err := jsonWriter.WriteSessionEnd(summary); err != nil {
+		logger.Printf("Warning: failed to write final JSON summary: %v", err)
+	}
+
+	if runErr != nil {
+		return fmt.Errorf("queen failed: %w", runErr)
+	}
+
 	return nil
 }
 

@@ -60,6 +60,7 @@ type Queen struct {
 
 	suppressReport bool // TUI mode: don't print report to stdout
 	quiet          bool // Quiet mode: only print completions/failures
+	suppressBanner bool // JSON mode: don't print header banner
 
 	// For tracking worker->task assignments
 	assignments  map[string]string // workerID -> taskID
@@ -475,7 +476,7 @@ func (q *Queen) plan(ctx context.Context) error {
 			Priority: int(t.Priority), Title: t.Title, Description: t.Description,
 			MaxRetries: t.MaxRetries, DependsOn: strings.Join(t.DependsOn, ","),
 		})
-		q.logger.Printf("  📌 Task: [%s] %s", t.Type, t.Title)
+		q.logVerbose("  📌 Task: [%s] %s", t.Type, t.Title)
 		return nil
 	}
 
@@ -525,7 +526,7 @@ func (q *Queen) plan(ctx context.Context) error {
 			Priority: int(t.Priority), Title: t.Title, Description: t.Description,
 			MaxRetries: t.MaxRetries, DependsOn: strings.Join(t.DependsOn, ","),
 		})
-		q.logger.Printf("  📌 Task: [%s] %s", t.Type, t.Title)
+		q.logVerbose("  📌 Task: [%s] %s", t.Type, t.Title)
 	}
 
 	q.ctx.Add("assistant", fmt.Sprintf("Plan created with %d tasks", len(tasks)))
@@ -673,7 +674,7 @@ func (q *Queen) review(ctx context.Context) (bool, error) {
 				})
 				q.db.PostBlackboard(ctx, q.sessionID, bbKey, result.Output, workerID, taskID, tagsStr)
 
-				q.logger.Printf("  ✅ Task %s completed by %s", taskID, workerID)
+				q.logVerbose("  ✅ Task %s completed by %s", taskID, workerID)
 
 				// LLM review: evaluate output quality if configured
 				if q.llm != nil && t != nil {
@@ -705,8 +706,8 @@ func (q *Queen) review(ctx context.Context) (bool, error) {
 					}
 				}
 
-				// Show output immediately so user sees findings in real-time
-				if t != nil && result.Output != "" {
+				// Show output immediately so user sees findings in real-time (unless suppressed)
+				if t != nil && result.Output != "" && !q.suppressReport {
 					fmt.Printf("\n  ┌─ [%s] %s\n", t.Type, t.Title)
 					for _, line := range strings.Split(strings.TrimSpace(result.Output), "\n") {
 						fmt.Printf("  │ %s\n", line)
@@ -792,7 +793,7 @@ func (q *Queen) handleTaskFailure(ctx context.Context, taskID, workerID string, 
 		q.logger.Printf("  ⚠ Warning: failed to update task error type: %v", err)
 	}
 
-	q.logger.Printf("  ❌ Task %s failed (%s): %s", taskID, errType, truncate(errMsg, 200))
+	q.logVerbose("  ❌ Task %s failed (%s): %s", taskID, errType, truncate(errMsg, 200))
 
 	// Check if error is retryable
 	isRetryable := errors.IsRetryable(fmt.Errorf("%s", errMsg))
@@ -810,7 +811,7 @@ func (q *Queen) handleTaskFailure(ctx context.Context, taskID, workerID string, 
 		q.db.UpdateTaskStatus(ctx, q.sessionID, taskID, "pending")
 		q.db.UpdateTaskRetryCount(ctx, q.sessionID, taskID, t.RetryCount)
 
-		q.logger.Printf("  🔄 Retrying task %s (attempt %d/%d) after %v backoff", taskID, t.RetryCount, t.MaxRetries, backoffDelay)
+		q.logVerbose("  🔄 Retrying task %s (attempt %d/%d) after %v backoff", taskID, t.RetryCount, t.MaxRetries, backoffDelay)
 
 		// Apply backoff by waiting before the task becomes ready again
 		go func() {
@@ -818,7 +819,7 @@ func (q *Queen) handleTaskFailure(ctx context.Context, taskID, workerID string, 
 		}()
 	} else if !isRetryable {
 		// Permanent error - fail immediately without wasting retries
-		q.logger.Printf("  💀 Task %s has permanent error, failing immediately", taskID)
+		q.logVerbose("  💀 Task %s has permanent error, failing immediately", taskID)
 		q.tasks.UpdateStatus(taskID, task.StatusFailed)
 		q.db.UpdateTaskStatus(ctx, q.sessionID, taskID, "failed")
 	} else {
@@ -1043,6 +1044,16 @@ func (q *Queen) SetQuiet(quiet bool) {
 	q.quiet = quiet
 }
 
+// SetSuppressBanner prevents printing the header banner (for JSON mode).
+func (q *Queen) SetSuppressBanner(suppress bool) {
+	q.suppressBanner = suppress
+}
+
+// SuppressBanner returns true if banner suppression is enabled.
+func (q *Queen) SuppressBanner() bool {
+	return q.suppressBanner
+}
+
 // logVerbose logs a message only if not in quiet mode.
 func (q *Queen) logVerbose(format string, v ...interface{}) {
 	if !q.quiet {
@@ -1075,6 +1086,7 @@ func (q *Queen) Status() map[string]interface{} {
 	defer q.mu.RUnlock()
 
 	return map[string]interface{}{
+		"session_id":     q.sessionID,
 		"phase":          q.phase,
 		"iteration":      q.iteration,
 		"objective":      q.objective,
