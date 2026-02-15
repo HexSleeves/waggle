@@ -34,29 +34,30 @@ func cmdStatus(ctx context.Context, cmd *cli.Command) error {
 
 // cmdStatusDB reads status from the SQLite database.
 func cmdStatusDB(hiveDir string) error {
+	ctx := context.Background()
 	db, err := state.OpenDB(hiveDir)
 	if err != nil {
 		return fmt.Errorf("open DB: %w", err)
 	}
 	defer db.Close()
 
-	session, err := db.LatestSession()
+	session, err := db.LatestSession(ctx)
 	if err != nil {
 		fmt.Println("Hive initialized but no sessions run yet.")
 		return nil
 	}
 
-	counts, err := db.CountTasksByStatus(session.ID)
+	counts, err := db.CountTasksByStatus(ctx, session.ID)
 	if err != nil {
 		return fmt.Errorf("count tasks: %w", err)
 	}
 
-	tasks, err := db.GetTasks(session.ID)
+	tasks, err := db.GetTasks(ctx, session.ID)
 	if err != nil {
 		return fmt.Errorf("get tasks: %w", err)
 	}
 
-	eventCount, err := db.EventCount(session.ID)
+	eventCount, err := db.EventCount(ctx, session.ID)
 	if err != nil {
 		return fmt.Errorf("event count: %w", err)
 	}

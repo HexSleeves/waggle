@@ -1,6 +1,7 @@
 package queen
 
 import (
+	"context"
 	"fmt"
 	"log"
 	"os"
@@ -65,7 +66,8 @@ func TestResumeContinuesInterruptedSession(t *testing.T) {
 	objective := "Test objective for resume"
 
 	// Create the session
-	if err := db.CreateSession(sessionID, objective); err != nil {
+	ctx := context.Background()
+	if err := db.CreateSession(ctx, sessionID, objective); err != nil {
 		t.Fatalf("Failed to create session: %v", err)
 	}
 
@@ -119,13 +121,13 @@ func TestResumeContinuesInterruptedSession(t *testing.T) {
 	}
 
 	for _, tr := range tasks {
-		if err := db.InsertTask(sessionID, tr); err != nil {
+		if err := db.InsertTask(ctx, sessionID, tr); err != nil {
 			t.Fatalf("Failed to insert task %s: %v", tr.ID, err)
 		}
 	}
 
 	// Set session phase and iteration to simulate interruption during monitor phase
-	if err := db.UpdateSessionPhase(sessionID, "monitor", 2); err != nil {
+	if err := db.UpdateSessionPhase(ctx, sessionID, "monitor", 2); err != nil {
 		t.Fatalf("Failed to update session phase: %v", err)
 	}
 
@@ -140,7 +142,7 @@ func TestResumeContinuesInterruptedSession(t *testing.T) {
 	defer q.Close()
 
 	// Resume the session
-	resumedObjective, err := q.ResumeSession(sessionID)
+	resumedObjective, err := q.ResumeSession(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("Failed to resume session: %v", err)
 	}
@@ -251,7 +253,7 @@ func TestResumeSessionNotFound(t *testing.T) {
 	defer q.Close()
 
 	// Try to resume a non-existent session
-	_, err = q.ResumeSession("non-existent-session-id")
+	_, err = q.ResumeSession(context.Background(), "non-existent-session-id")
 	if err == nil {
 		t.Error("Expected error when resuming non-existent session, got nil")
 	}
@@ -278,24 +280,26 @@ func TestFindResumableSession(t *testing.T) {
 	}
 	defer db.Close()
 
+	ctx := context.Background()
+
 	// Create a "done" session - should not be resumable
 	doneSessionID := fmt.Sprintf("session-done-%d", time.Now().UnixNano())
-	if err := db.CreateSession(doneSessionID, "Done objective"); err != nil {
+	if err := db.CreateSession(ctx, doneSessionID, "Done objective"); err != nil {
 		t.Fatalf("Failed to create done session: %v", err)
 	}
-	if err := db.UpdateSessionStatus(doneSessionID, "done"); err != nil {
+	if err := db.UpdateSessionStatus(ctx, doneSessionID, "done"); err != nil {
 		t.Fatalf("Failed to update session status: %v", err)
 	}
 
 	// Create a "running" session - should be resumable
 	runningSessionID := fmt.Sprintf("session-running-%d", time.Now().UnixNano())
-	if err := db.CreateSession(runningSessionID, "Running objective"); err != nil {
+	if err := db.CreateSession(ctx, runningSessionID, "Running objective"); err != nil {
 		t.Fatalf("Failed to create running session: %v", err)
 	}
 	// Status is already "running" by default
 
 	// Find resumable session
-	session, err := db.FindResumableSession()
+	session, err := db.FindResumableSession(ctx)
 	if err != nil {
 		t.Fatalf("Failed to find resumable session: %v", err)
 	}
@@ -332,7 +336,8 @@ func TestResetRunningTasks(t *testing.T) {
 	defer db.Close()
 
 	sessionID := fmt.Sprintf("session-%d", time.Now().UnixNano())
-	if err := db.CreateSession(sessionID, "Test objective"); err != nil {
+	ctx := context.Background()
+	if err := db.CreateSession(ctx, sessionID, "Test objective"); err != nil {
 		t.Fatalf("Failed to create session: %v", err)
 	}
 
@@ -348,12 +353,12 @@ func TestResetRunningTasks(t *testing.T) {
 		WorkerID:    strPtr("worker-123"),
 		CreatedAt:   time.Now().UTC().Format(time.RFC3339Nano),
 	}
-	if err := db.InsertTask(sessionID, runningTask); err != nil {
+	if err := db.InsertTask(ctx, sessionID, runningTask); err != nil {
 		t.Fatalf("Failed to insert running task: %v", err)
 	}
 
 	// Verify task is running
-	tasks, err := db.GetTasksByStatus(sessionID, "running")
+	tasks, err := db.GetTasksByStatus(ctx, sessionID, "running")
 	if err != nil {
 		t.Fatalf("Failed to get running tasks: %v", err)
 	}
@@ -362,12 +367,12 @@ func TestResetRunningTasks(t *testing.T) {
 	}
 
 	// Reset running tasks
-	if err := db.ResetRunningTasks(sessionID); err != nil {
+	if err := db.ResetRunningTasks(ctx, sessionID); err != nil {
 		t.Fatalf("Failed to reset running tasks: %v", err)
 	}
 
 	// Verify no running tasks remain
-	runningTasks, err := db.GetTasksByStatus(sessionID, "running")
+	runningTasks, err := db.GetTasksByStatus(ctx, sessionID, "running")
 	if err != nil {
 		t.Fatalf("Failed to get running tasks after reset: %v", err)
 	}
@@ -376,7 +381,7 @@ func TestResetRunningTasks(t *testing.T) {
 	}
 
 	// Verify task is now pending
-	pendingTasks, err := db.GetTasksByStatus(sessionID, "pending")
+	pendingTasks, err := db.GetTasksByStatus(ctx, sessionID, "pending")
 	if err != nil {
 		t.Fatalf("Failed to get pending tasks: %v", err)
 	}
@@ -443,7 +448,8 @@ func TestQueenRunWithResumedSession(t *testing.T) {
 	sessionID := fmt.Sprintf("test-session-run-%d", time.Now().UnixNano())
 	objective := "Run test objective"
 
-	if err := db.CreateSession(sessionID, objective); err != nil {
+	ctx := context.Background()
+	if err := db.CreateSession(ctx, sessionID, objective); err != nil {
 		t.Fatalf("Failed to create session: %v", err)
 	}
 
@@ -458,7 +464,7 @@ func TestQueenRunWithResumedSession(t *testing.T) {
 		MaxRetries:  2,
 		CreatedAt:   time.Now().UTC().Format(time.RFC3339Nano),
 	}
-	if err := db.InsertTask(sessionID, testTask); err != nil {
+	if err := db.InsertTask(ctx, sessionID, testTask); err != nil {
 		t.Fatalf("Failed to insert task: %v", err)
 	}
 
@@ -471,7 +477,7 @@ func TestQueenRunWithResumedSession(t *testing.T) {
 	}
 
 	// Resume the session
-	if _, err := q.ResumeSession(sessionID); err != nil {
+	if _, err := q.ResumeSession(context.Background(), sessionID); err != nil {
 		q.Close()
 		t.Fatalf("Failed to resume session: %v", err)
 	}
@@ -532,7 +538,7 @@ func TestSavePhase(t *testing.T) {
 
 	// Manually set up a session
 	sessionID := fmt.Sprintf("phase-test-session-%d", time.Now().UnixNano())
-	if err := q.db.CreateSession(sessionID, "Phase test"); err != nil {
+	if err := q.db.CreateSession(context.Background(), sessionID, "Phase test"); err != nil {
 		q.Close()
 		t.Fatalf("Failed to create session: %v", err)
 	}
@@ -544,7 +550,7 @@ func TestSavePhase(t *testing.T) {
 	q.savePhase()
 
 	// Verify phase was saved
-	phase, iteration, err := q.db.GetSessionPhase(sessionID)
+	phase, iteration, err := q.db.GetSessionPhase(context.Background(), sessionID)
 	if err != nil {
 		q.Close()
 		t.Fatalf("Failed to get session phase: %v", err)

@@ -1,6 +1,7 @@
 package queen
 
 import (
+	"context"
 	"log"
 	"os"
 	"path/filepath"
@@ -57,20 +58,20 @@ func TestCloseDoesNotOverwriteDoneStatus(t *testing.T) {
 
 	// Manually set up a session with 'done' status
 	sessionID := "test-session-done"
-	if err := q.db.CreateSession(sessionID, "Test objective done"); err != nil {
+	if err := q.db.CreateSession(context.Background(), sessionID, "Test objective done"); err != nil {
 		q.Close()
 		t.Fatalf("Failed to create session: %v", err)
 	}
 	q.sessionID = sessionID
 
 	// Set the status to 'done' directly in the database
-	if err := q.db.UpdateSessionStatus(sessionID, "done"); err != nil {
+	if err := q.db.UpdateSessionStatus(context.Background(), sessionID, "done"); err != nil {
 		q.Close()
 		t.Fatalf("Failed to set session status to done: %v", err)
 	}
 
 	// Verify status is 'done' before Close()
-	session, err := q.db.GetSession(sessionID)
+	session, err := q.db.GetSession(context.Background(), sessionID)
 	if err != nil {
 		q.Close()
 		t.Fatalf("Failed to get session before close: %v", err)
@@ -93,7 +94,7 @@ func TestCloseDoesNotOverwriteDoneStatus(t *testing.T) {
 	defer db.Close()
 
 	// Verify status is still 'done' after Close()
-	session, err = db.GetSession(sessionID)
+	session, err = db.GetSession(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("Failed to get session after close: %v", err)
 	}
@@ -151,20 +152,20 @@ func TestCloseDoesNotOverwriteFailedStatus(t *testing.T) {
 
 	// Manually set up a session with 'failed' status
 	sessionID := "test-session-failed"
-	if err := q.db.CreateSession(sessionID, "Test objective failed"); err != nil {
+	if err := q.db.CreateSession(context.Background(), sessionID, "Test objective failed"); err != nil {
 		q.Close()
 		t.Fatalf("Failed to create session: %v", err)
 	}
 	q.sessionID = sessionID
 
 	// Set the status to 'failed' directly in the database
-	if err := q.db.UpdateSessionStatus(sessionID, "failed"); err != nil {
+	if err := q.db.UpdateSessionStatus(context.Background(), sessionID, "failed"); err != nil {
 		q.Close()
 		t.Fatalf("Failed to set session status to failed: %v", err)
 	}
 
 	// Verify status is 'failed' before Close()
-	session, err := q.db.GetSession(sessionID)
+	session, err := q.db.GetSession(context.Background(), sessionID)
 	if err != nil {
 		q.Close()
 		t.Fatalf("Failed to get session before close: %v", err)
@@ -187,7 +188,7 @@ func TestCloseDoesNotOverwriteFailedStatus(t *testing.T) {
 	defer db.Close()
 
 	// Verify status is still 'failed' after Close()
-	session, err = db.GetSession(sessionID)
+	session, err = db.GetSession(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("Failed to get session after close: %v", err)
 	}
@@ -245,14 +246,14 @@ func TestCloseSetsStoppedForRunningStatus(t *testing.T) {
 
 	// Manually set up a session with 'running' status
 	sessionID := "test-session-running"
-	if err := q.db.CreateSession(sessionID, "Test objective running"); err != nil {
+	if err := q.db.CreateSession(context.Background(), sessionID, "Test objective running"); err != nil {
 		q.Close()
 		t.Fatalf("Failed to create session: %v", err)
 	}
 	q.sessionID = sessionID
 
 	// Verify status is 'running' before Close()
-	session, err := q.db.GetSession(sessionID)
+	session, err := q.db.GetSession(context.Background(), sessionID)
 	if err != nil {
 		q.Close()
 		t.Fatalf("Failed to get session before close: %v", err)
@@ -275,7 +276,7 @@ func TestCloseSetsStoppedForRunningStatus(t *testing.T) {
 	defer db.Close()
 
 	// Verify status is now 'stopped' after Close()
-	session, err = db.GetSession(sessionID)
+	session, err = db.GetSession(context.Background(), sessionID)
 	if err != nil {
 		t.Fatalf("Failed to get session after close: %v", err)
 	}

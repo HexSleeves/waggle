@@ -1,6 +1,7 @@
 package state
 
 import (
+	"context"
 	"database/sql"
 	"encoding/json"
 	"fmt"
@@ -125,8 +126,8 @@ type SessionInfoFull struct {
 }
 
 // GetSessionFull retrieves session info including phase and iteration.
-func (s *DB) GetSessionFull(id string) (*SessionInfoFull, error) {
-	row := s.db.QueryRow(`SELECT id, objective, status, created_at, updated_at, COALESCE(phase, 'plan'), COALESCE(iteration, 0) FROM sessions WHERE id = ?`, id)
+func (s *DB) GetSessionFull(ctx context.Context, id string) (*SessionInfoFull, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT id, objective, status, created_at, updated_at, COALESCE(phase, 'plan'), COALESCE(iteration, 0) FROM sessions WHERE id = ?`, id)
 	var si SessionInfoFull
 	if err := row.Scan(&si.ID, &si.Objective, &si.Status, &si.CreatedAt, &si.UpdatedAt, &si.Phase, &si.Iteration); err != nil {
 		return nil, err
@@ -134,18 +135,18 @@ func (s *DB) GetSessionFull(id string) (*SessionInfoFull, error) {
 	return &si, nil
 }
 
-func (s *DB) CreateSession(id, objective string) error {
+func (s *DB) CreateSession(ctx context.Context, id, objective string) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.db.Exec(
+	_, err := s.db.ExecContext(ctx,
 		`INSERT INTO sessions (id, objective, status, created_at, updated_at) VALUES (?, ?, 'running', ?, ?)`,
 		id, objective, now, now,
 	)
 	return err
 }
 
-func (s *DB) UpdateSessionStatus(id, status string) error {
+func (s *DB) UpdateSessionStatus(ctx context.Context, id, status string) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.db.Exec(
+	_, err := s.db.ExecContext(ctx,
 		`UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?`,
 		status, now, id,
 	)
@@ -160,8 +161,8 @@ type SessionInfo struct {
 	UpdatedAt string `json:"updated_at"`
 }
 
-func (s *DB) GetSession(id string) (*SessionInfo, error) {
-	row := s.db.QueryRow(`SELECT id, objective, status, created_at, updated_at FROM sessions WHERE id = ?`, id)
+func (s *DB) GetSession(ctx context.Context, id string) (*SessionInfo, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT id, objective, status, created_at, updated_at FROM sessions WHERE id = ?`, id)
 	var si SessionInfo
 	if err := row.Scan(&si.ID, &si.Objective, &si.Status, &si.CreatedAt, &si.UpdatedAt); err != nil {
 		return nil, err
@@ -169,8 +170,8 @@ func (s *DB) GetSession(id string) (*SessionInfo, error) {
 	return &si, nil
 }
 
-func (s *DB) LatestSession() (*SessionInfo, error) {
-	row := s.db.QueryRow(`SELECT id, objective, status, created_at, updated_at FROM sessions ORDER BY created_at DESC LIMIT 1`)
+func (s *DB) LatestSession(ctx context.Context) (*SessionInfo, error) {
+	row := s.db.QueryRowContext(ctx, `SELECT id, objective, status, created_at, updated_at FROM sessions ORDER BY created_at DESC LIMIT 1`)
 	var si SessionInfo
 	if err := row.Scan(&si.ID, &si.Objective, &si.Status, &si.CreatedAt, &si.UpdatedAt); err != nil {
 		return nil, err
@@ -180,8 +181,8 @@ func (s *DB) LatestSession() (*SessionInfo, error) {
 
 // FindResumableSession returns the most recent session that is not 'done' and can be resumed.
 // It excludes sessions with status 'done' or 'cancelled'.
-func (s *DB) FindResumableSession() (*SessionInfo, error) {
-	row := s.db.QueryRow(`
+func (s *DB) FindResumableSession(ctx context.Context) (*SessionInfo, error) {
+	row := s.db.QueryRowContext(ctx, `
 		SELECT id, objective, status, created_at, updated_at
 		FROM sessions
 		WHERE status NOT IN ('done', 'cancelled')
@@ -194,9 +195,9 @@ func (s *DB) FindResumableSession() (*SessionInfo, error) {
 }
 
 // UpdateSessionPhase saves the current phase and iteration for session resumption.
-func (s *DB) UpdateSessionPhase(sessionID string, phase string, iteration int) error {
+func (s *DB) UpdateSessionPhase(ctx context.Context, sessionID string, phase string, iteration int) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.db.Exec(
+	_, err := s.db.ExecContext(ctx,
 		`UPDATE sessions SET phase = ?, iteration = ?, updated_at = ? WHERE id = ?`,
 		phase, iteration, now, sessionID,
 	)
@@ -204,10 +205,10 @@ func (s *DB) UpdateSessionPhase(sessionID string, phase string, iteration int) e
 }
 
 // GetSessionPhase retrieves the saved phase and iteration for a session.
-func (s *DB) GetSessionPhase(sessionID string) (string, int, error) {
+func (s *DB) GetSessionPhase(ctx context.Context, sessionID string) (string, int, error) {
 	var phase string
 	var iteration int
-	err := s.db.QueryRow(
+	err := s.db.QueryRowContext(ctx,
 		`SELECT COALESCE(phase, 'plan'), COALESCE(iteration, 0) FROM sessions WHERE id = ?`,
 		sessionID,
 	).Scan(&phase, &iteration)
@@ -216,7 +217,7 @@ func (s *DB) GetSessionPhase(sessionID string) (string, int, error) {
 
 // --- Event log (append-only) ---
 
-func (s *DB) AppendEvent(sessionID, eventType string, data interface{}) (int64, error) {
+func (s *DB) AppendEvent(ctx context.Context, sessionID, eventType string, data interface{}) (int64, error) {
 	var dataStr string
 	if data != nil {
 		b, err := json.Marshal(data)
@@ -226,7 +227,7 @@ func (s *DB) AppendEvent(sessionID, eventType string, data interface{}) (int64, 
 		dataStr = string(b)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	result, err := s.db.Exec(
+	result, err := s.db.ExecContext(ctx,
 		`INSERT INTO events (session_id, type, data, created_at) VALUES (?, ?, ?, ?)`,
 		sessionID, eventType, dataStr, now,
 	)
@@ -236,9 +237,9 @@ func (s *DB) AppendEvent(sessionID, eventType string, data interface{}) (int64, 
 	return result.LastInsertId()
 }
 
-func (s *DB) EventCount(sessionID string) (int, error) {
+func (s *DB) EventCount(ctx context.Context, sessionID string) (int, error) {
 	var count int
-	err := s.db.QueryRow(`SELECT COUNT(*) FROM events WHERE session_id = ?`, sessionID).Scan(&count)
+	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE session_id = ?`, sessionID).Scan(&count)
 	return count, err
 }
 
@@ -263,9 +264,9 @@ type TaskRow struct {
 	CompletedAt *string `json:"completed_at,omitempty"`
 }
 
-func (s *DB) InsertTask(sessionID string, t TaskRow) error {
+func (s *DB) InsertTask(ctx context.Context, sessionID string, t TaskRow) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.db.Exec(
+	_, err := s.db.ExecContext(ctx,
 		`INSERT OR REPLACE INTO tasks
 		(id, session_id, type, status, priority, title, description, max_retries, retry_count, depends_on, timeout_ns, created_at, result_data)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -275,7 +276,7 @@ func (s *DB) InsertTask(sessionID string, t TaskRow) error {
 	return err
 }
 
-func (s *DB) UpdateTaskStatus(sessionID, taskID, status string) error {
+func (s *DB) UpdateTaskStatus(ctx context.Context, sessionID, taskID, status string) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	var col string
 	switch status {
@@ -285,33 +286,33 @@ func (s *DB) UpdateTaskStatus(sessionID, taskID, status string) error {
 		col = "completed_at"
 	}
 	if col != "" {
-		_, err := s.db.Exec(
+		_, err := s.db.ExecContext(ctx,
 			fmt.Sprintf(`UPDATE tasks SET status = ?, %s = ? WHERE id = ? AND session_id = ?`, col),
 			status, now, taskID, sessionID,
 		)
 		return err
 	}
-	_, err := s.db.Exec(
+	_, err := s.db.ExecContext(ctx,
 		`UPDATE tasks SET status = ? WHERE id = ? AND session_id = ?`,
 		status, taskID, sessionID,
 	)
 	return err
 }
 
-func (s *DB) UpdateTaskWorker(sessionID, taskID, workerID string) error {
-	_, err := s.db.Exec(
+func (s *DB) UpdateTaskWorker(ctx context.Context, sessionID, taskID, workerID string) error {
+	_, err := s.db.ExecContext(ctx,
 		`UPDATE tasks SET worker_id = ? WHERE id = ? AND session_id = ?`,
 		workerID, taskID, sessionID,
 	)
 	return err
 }
 
-func (s *DB) UpdateTaskResult(sessionID, taskID string, result interface{}) error {
+func (s *DB) UpdateTaskResult(ctx context.Context, sessionID, taskID string, result interface{}) error {
 	b, err := json.Marshal(result)
 	if err != nil {
 		return err
 	}
-	_, err = s.db.Exec(
+	_, err = s.db.ExecContext(ctx,
 		`UPDATE tasks SET result = ?, result_data = ? WHERE id = ? AND session_id = ?`,
 		string(b), string(b), taskID, sessionID,
 	)
@@ -319,8 +320,8 @@ func (s *DB) UpdateTaskResult(sessionID, taskID string, result interface{}) erro
 }
 
 // UpdateTaskRetryCount sets the retry count for a task.
-func (s *DB) UpdateTaskRetryCount(sessionID, taskID string, retryCount int) error {
-	_, err := s.db.Exec(
+func (s *DB) UpdateTaskRetryCount(ctx context.Context, sessionID, taskID string, retryCount int) error {
+	_, err := s.db.ExecContext(ctx,
 		`UPDATE tasks SET retry_count = ? WHERE id = ? AND session_id = ?`,
 		retryCount, taskID, sessionID,
 	)
@@ -328,14 +329,14 @@ func (s *DB) UpdateTaskRetryCount(sessionID, taskID string, retryCount int) erro
 }
 
 // UpdateTaskErrorType sets the last error type for a task.
-func (s *DB) UpdateTaskErrorType(sessionID, taskID, errorType string) error {
-	tx, err := s.db.Begin()
+func (s *DB) UpdateTaskErrorType(ctx context.Context, sessionID, taskID, errorType string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
 	defer tx.Rollback() // no-op after commit
 
-	_, err = tx.Exec(
+	_, err = tx.ExecContext(ctx,
 		`UPDATE tasks SET result_data = COALESCE(result_data, '{}') WHERE id = ? AND session_id = ?`,
 		taskID, sessionID,
 	)
@@ -344,7 +345,7 @@ func (s *DB) UpdateTaskErrorType(sessionID, taskID, errorType string) error {
 	}
 	// Store error type in a separate column by using a JSON patch approach
 	// For now, we'll store it in the result_data field as JSON
-	_, err = tx.Exec(
+	_, err = tx.ExecContext(ctx,
 		`UPDATE tasks SET result_data = json_set(COALESCE(result_data, '{}'), '$.last_error_type', ?) WHERE id = ? AND session_id = ?`,
 		errorType, taskID, sessionID,
 	)
@@ -355,14 +356,14 @@ func (s *DB) UpdateTaskErrorType(sessionID, taskID, errorType string) error {
 	return tx.Commit()
 }
 
-func (s *DB) IncrementTaskRetry(sessionID, taskID string) (int, error) {
-	tx, err := s.db.Begin()
+func (s *DB) IncrementTaskRetry(ctx context.Context, sessionID, taskID string) (int, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("begin transaction: %w", err)
 	}
 	defer tx.Rollback() // no-op after commit
 
-	_, err = tx.Exec(
+	_, err = tx.ExecContext(ctx,
 		`UPDATE tasks SET retry_count = retry_count + 1 WHERE id = ? AND session_id = ?`,
 		taskID, sessionID,
 	)
@@ -370,15 +371,15 @@ func (s *DB) IncrementTaskRetry(sessionID, taskID string) (int, error) {
 		return 0, err
 	}
 	var count int
-	err = tx.QueryRow(`SELECT retry_count FROM tasks WHERE id = ? AND session_id = ?`, taskID, sessionID).Scan(&count)
+	err = tx.QueryRowContext(ctx, `SELECT retry_count FROM tasks WHERE id = ? AND session_id = ?`, taskID, sessionID).Scan(&count)
 	if err != nil {
 		return 0, err
 	}
 	return count, tx.Commit()
 }
 
-func (s *DB) GetTask(sessionID, taskID string) (*TaskRow, error) {
-	row := s.db.QueryRow(
+func (s *DB) GetTask(ctx context.Context, sessionID, taskID string) (*TaskRow, error) {
+	row := s.db.QueryRowContext(ctx,
 		`SELECT id, session_id, type, status, priority, title, description, worker_id, result,
 		 max_retries, retry_count, depends_on, created_at, started_at, completed_at, result_data
 		 FROM tasks WHERE id = ? AND session_id = ?`,
@@ -387,8 +388,8 @@ func (s *DB) GetTask(sessionID, taskID string) (*TaskRow, error) {
 	return scanTask(row)
 }
 
-func (s *DB) GetTasks(sessionID string) ([]TaskRow, error) {
-	rows, err := s.db.Query(
+func (s *DB) GetTasks(ctx context.Context, sessionID string) ([]TaskRow, error) {
+	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, session_id, type, status, priority, title, description, worker_id, result,
 		 max_retries, retry_count, depends_on, created_at, started_at, completed_at, result_data
 		 FROM tasks WHERE session_id = ? ORDER BY priority DESC, created_at`,
@@ -409,8 +410,8 @@ func (s *DB) GetTasks(sessionID string) ([]TaskRow, error) {
 	return tasks, rows.Err()
 }
 
-func (s *DB) GetTasksByStatus(sessionID, status string) ([]TaskRow, error) {
-	rows, err := s.db.Query(
+func (s *DB) GetTasksByStatus(ctx context.Context, sessionID, status string) ([]TaskRow, error) {
+	rows, err := s.db.QueryContext(ctx,
 		`SELECT id, session_id, type, status, priority, title, description, worker_id, result,
 		 max_retries, retry_count, depends_on, created_at, started_at, completed_at, result_data
 		 FROM tasks WHERE session_id = ? AND status = ? ORDER BY priority DESC`,
@@ -431,8 +432,8 @@ func (s *DB) GetTasksByStatus(sessionID, status string) ([]TaskRow, error) {
 	return tasks, rows.Err()
 }
 
-func (s *DB) CountTasksByStatus(sessionID string) (map[string]int, error) {
-	rows, err := s.db.Query(
+func (s *DB) CountTasksByStatus(ctx context.Context, sessionID string) (map[string]int, error) {
+	rows, err := s.db.QueryContext(ctx,
 		`SELECT status, COUNT(*) FROM tasks WHERE session_id = ? GROUP BY status`,
 		sessionID,
 	)
@@ -454,9 +455,9 @@ func (s *DB) CountTasksByStatus(sessionID string) (map[string]int, error) {
 
 // --- Blackboard operations ---
 
-func (s *DB) PostBlackboard(sessionID, key, value, postedBy, taskID, tags string) error {
+func (s *DB) PostBlackboard(ctx context.Context, sessionID, key, value, postedBy, taskID, tags string) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.db.Exec(
+	_, err := s.db.ExecContext(ctx,
 		`INSERT OR REPLACE INTO blackboard (key, session_id, value, posted_by, task_id, tags, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		key, sessionID, value, postedBy, taskID, tags, now,
@@ -464,9 +465,9 @@ func (s *DB) PostBlackboard(sessionID, key, value, postedBy, taskID, tags string
 	return err
 }
 
-func (s *DB) ReadBlackboard(sessionID, key string) (string, error) {
+func (s *DB) ReadBlackboard(ctx context.Context, sessionID, key string) (string, error) {
 	var value string
-	err := s.db.QueryRow(
+	err := s.db.QueryRowContext(ctx,
 		`SELECT value FROM blackboard WHERE key = ? AND session_id = ?`,
 		key, sessionID,
 	).Scan(&value)
@@ -475,14 +476,14 @@ func (s *DB) ReadBlackboard(sessionID, key string) (string, error) {
 
 // --- KV (general purpose) ---
 
-func (s *DB) SetKV(key, value string) error {
-	_, err := s.db.Exec(`INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)`, key, value)
+func (s *DB) SetKV(ctx context.Context, key, value string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)`, key, value)
 	return err
 }
 
-func (s *DB) GetKV(key string) (string, error) {
+func (s *DB) GetKV(ctx context.Context, key string) (string, error) {
 	var value string
-	err := s.db.QueryRow(`SELECT value FROM kv WHERE key = ?`, key).Scan(&value)
+	err := s.db.QueryRowContext(ctx, `SELECT value FROM kv WHERE key = ?`, key).Scan(&value)
 	return value, err
 }
 
@@ -522,8 +523,8 @@ func scanTaskRows(rows *sql.Rows) (*TaskRow, error) {
 
 // ResetRunningTasks marks all 'running' tasks as 'pending' for session resumption.
 // This should be called when resuming a session to retry tasks that were interrupted.
-func (s *DB) ResetRunningTasks(sessionID string) error {
-	_, err := s.db.Exec(
+func (s *DB) ResetRunningTasks(ctx context.Context, sessionID string) error {
+	_, err := s.db.ExecContext(ctx,
 		`UPDATE tasks SET status = 'pending', worker_id = NULL, started_at = NULL WHERE session_id = ? AND status = 'running'`,
 		sessionID,
 	)

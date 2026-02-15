@@ -72,9 +72,9 @@ func (q *Queen) SetTasks(tasks []*task.Task) {
 // It restores the task graph with all statuses, and prepares the queen
 // to continue execution from the appropriate phase.
 // Returns the objective and any error encountered.
-func (q *Queen) ResumeSession(sessionID string) (string, error) {
+func (q *Queen) ResumeSession(ctx context.Context, sessionID string) (string, error) {
 	// Get session info including phase and iteration
-	sessionInfo, err := q.db.GetSessionFull(sessionID)
+	sessionInfo, err := q.db.GetSessionFull(ctx, sessionID)
 	if err != nil {
 		return "", fmt.Errorf("get session info: %w", err)
 	}
@@ -91,12 +91,12 @@ func (q *Queen) ResumeSession(sessionID string) (string, error) {
 	}
 
 	// Reset any 'running' tasks to 'pending' since workers are gone
-	if err := q.db.ResetRunningTasks(sessionID); err != nil {
+	if err := q.db.ResetRunningTasks(ctx, sessionID); err != nil {
 		q.logger.Printf("⚠ Warning: failed to reset running tasks: %v", err)
 	}
 
 	// Load all tasks from the session
-	taskRows, err := q.db.GetTasks(sessionID)
+	taskRows, err := q.db.GetTasks(ctx, sessionID)
 	if err != nil {
 		return "", fmt.Errorf("load tasks: %w", err)
 	}
@@ -299,7 +299,7 @@ func New(cfg *config.Config, logger *log.Logger) (*Queen, error) {
 	// Wire up event logging to SQLite
 	msgBus.SubscribeAll(func(msg bus.Message) {
 		if sid := q.sessionID; sid != "" {
-			q.db.AppendEvent(sid, string(msg.Type), msg)
+			q.db.AppendEvent(context.Background(), sid, string(msg.Type), msg)
 		}
 	})
 
@@ -334,7 +334,7 @@ func (q *Queen) Run(ctx context.Context, objective string) error {
 
 	// Create DB session
 	q.sessionID = fmt.Sprintf("session-%d", time.Now().UnixNano())
-	if err := q.db.CreateSession(q.sessionID, objective); err != nil {
+	if err := q.db.CreateSession(ctx, q.sessionID, objective); err != nil {
 		q.logger.Printf("⚠ DB: failed to create session: %v", err)
 	}
 
@@ -398,7 +398,7 @@ func (q *Queen) Run(ctx context.Context, objective string) error {
 
 		case PhaseDone:
 			q.logger.Println("✅ All tasks complete!")
-			q.db.UpdateSessionStatus(q.sessionID, "done")
+			q.db.UpdateSessionStatus(ctx, q.sessionID, "done")
 			q.printReport()
 			return nil
 
@@ -432,7 +432,7 @@ func (q *Queen) plan(ctx context.Context) error {
 	if len(q.pendingTasks) > 0 {
 		for _, t := range q.pendingTasks {
 			q.tasks.Add(t)
-			q.db.InsertTask(q.sessionID, state.TaskRow{
+			q.db.InsertTask(ctx, q.sessionID, state.TaskRow{
 				ID: t.ID, Type: string(t.Type), Status: string(t.Status),
 				Priority: int(t.Priority), Title: t.Title, Description: t.Description,
 				MaxRetries: t.MaxRetries, DependsOn: strings.Join(t.DependsOn, ","),
@@ -459,7 +459,7 @@ func (q *Queen) plan(ctx context.Context) error {
 			Timeout:     q.cfg.Workers.DefaultTimeout,
 		}
 		q.tasks.Add(t)
-		q.db.InsertTask(q.sessionID, state.TaskRow{
+		q.db.InsertTask(ctx, q.sessionID, state.TaskRow{
 			ID: t.ID, Type: string(t.Type), Status: string(t.Status),
 			Priority: int(t.Priority), Title: t.Title, Description: t.Description,
 			MaxRetries: t.MaxRetries, DependsOn: strings.Join(t.DependsOn, ","),
@@ -509,7 +509,7 @@ func (q *Queen) plan(ctx context.Context) error {
 
 	for _, t := range tasks {
 		q.tasks.Add(t)
-		q.db.InsertTask(q.sessionID, state.TaskRow{
+		q.db.InsertTask(ctx, q.sessionID, state.TaskRow{
 			ID: t.ID, Type: string(t.Type), Status: string(t.Status),
 			Priority: int(t.Priority), Title: t.Title, Description: t.Description,
 			MaxRetries: t.MaxRetries, DependsOn: strings.Join(t.DependsOn, ","),
@@ -570,8 +570,8 @@ func (q *Queen) delegate(ctx context.Context) error {
 		q.tasks.UpdateStatus(t.ID, task.StatusRunning)
 		t.WorkerID = bee.ID()
 
-		q.db.UpdateTaskStatus(q.sessionID, t.ID, "running")
-		q.db.UpdateTaskWorker(q.sessionID, t.ID, bee.ID())
+		q.db.UpdateTaskStatus(ctx, q.sessionID, t.ID, "running")
+		q.db.UpdateTaskWorker(ctx, q.sessionID, t.ID, bee.ID())
 
 		q.logger.Printf("  🐝 Assigned [%s] %s -> %s (%s)", t.Type, t.Title, bee.ID(), adapterName)
 	}
@@ -644,8 +644,8 @@ func (q *Queen) review(ctx context.Context) (bool, error) {
 					t.Result = result
 				}
 
-				q.db.UpdateTaskStatus(q.sessionID, taskID, "complete")
-				q.db.UpdateTaskResult(q.sessionID, taskID, result)
+				q.db.UpdateTaskStatus(ctx, q.sessionID, taskID, "complete")
+				q.db.UpdateTaskResult(ctx, q.sessionID, taskID, result)
 
 				// Post result to blackboard
 				bbKey := fmt.Sprintf("result-%s", taskID)
@@ -660,7 +660,7 @@ func (q *Queen) review(ctx context.Context) (bool, error) {
 					TaskID:   taskID,
 					Tags:     []string{"result", string(t.Type)},
 				})
-				q.db.PostBlackboard(q.sessionID, bbKey, result.Output, workerID, taskID, tagsStr)
+				q.db.PostBlackboard(ctx, q.sessionID, bbKey, result.Output, workerID, taskID, tagsStr)
 
 				q.logger.Printf("  ✅ Task %s completed by %s", taskID, workerID)
 
@@ -684,7 +684,7 @@ func (q *Queen) review(ctx context.Context) (bool, error) {
 								t.Description += "\nSuggestions: " + strings.Join(verdict.Suggestions, "; ")
 							}
 							q.tasks.UpdateStatus(taskID, task.StatusPending)
-							q.db.UpdateTaskStatus(q.sessionID, taskID, "pending")
+							q.db.UpdateTaskStatus(ctx, q.sessionID, taskID, "pending")
 							q.logger.Printf("  🔄 Re-queued task %s (attempt %d/%d)", taskID, t.RetryCount, t.MaxRetries)
 							continue
 						}
@@ -727,7 +727,7 @@ func (q *Queen) review(ctx context.Context) (bool, error) {
 			} else if len(newTasks) > 0 {
 				for _, t := range newTasks {
 					q.tasks.Add(t)
-					q.db.InsertTask(q.sessionID, state.TaskRow{
+					q.db.InsertTask(ctx, q.sessionID, state.TaskRow{
 						ID: t.ID, Type: string(t.Type), Status: string(t.Status),
 						Priority: int(t.Priority), Title: t.Title, Description: t.Description,
 						MaxRetries: t.MaxRetries, DependsOn: strings.Join(t.DependsOn, ","),
@@ -777,7 +777,7 @@ func (q *Queen) handleTaskFailure(ctx context.Context, taskID, workerID string, 
 	t.LastErrorType = string(errType)
 
 	// Update error type in database
-	if err := q.db.UpdateTaskErrorType(q.sessionID, taskID, t.LastErrorType); err != nil {
+	if err := q.db.UpdateTaskErrorType(ctx, q.sessionID, taskID, t.LastErrorType); err != nil {
 		q.logger.Printf("  ⚠ Warning: failed to update task error type: %v", err)
 	}
 
@@ -796,8 +796,8 @@ func (q *Queen) handleTaskFailure(ctx context.Context, taskID, workerID string, 
 		backoffDelay := errors.CalculateBackoff(baseDelay, t.RetryCount-1, maxDelay)
 
 		q.tasks.UpdateStatus(taskID, task.StatusPending)
-		q.db.UpdateTaskStatus(q.sessionID, taskID, "pending")
-		q.db.UpdateTaskRetryCount(q.sessionID, taskID, t.RetryCount)
+		q.db.UpdateTaskStatus(ctx, q.sessionID, taskID, "pending")
+		q.db.UpdateTaskRetryCount(ctx, q.sessionID, taskID, t.RetryCount)
 
 		q.logger.Printf("  🔄 Retrying task %s (attempt %d/%d) after %v backoff", taskID, t.RetryCount, t.MaxRetries, backoffDelay)
 
@@ -809,11 +809,11 @@ func (q *Queen) handleTaskFailure(ctx context.Context, taskID, workerID string, 
 		// Permanent error - fail immediately without wasting retries
 		q.logger.Printf("  💀 Task %s has permanent error, failing immediately", taskID)
 		q.tasks.UpdateStatus(taskID, task.StatusFailed)
-		q.db.UpdateTaskStatus(q.sessionID, taskID, "failed")
+		q.db.UpdateTaskStatus(ctx, q.sessionID, taskID, "failed")
 	} else {
 		// Max retries exceeded
 		q.tasks.UpdateStatus(taskID, task.StatusFailed)
-		q.db.UpdateTaskStatus(q.sessionID, taskID, "failed")
+		q.db.UpdateTaskStatus(ctx, q.sessionID, taskID, "failed")
 	}
 }
 
@@ -995,7 +995,7 @@ func (q *Queen) Results() []TaskResult {
 // savePhase saves the current phase and iteration to the database for resumption.
 func (q *Queen) savePhase() {
 	if q.sessionID != "" {
-		if err := q.db.UpdateSessionPhase(q.sessionID, string(q.phase), q.iteration); err != nil {
+		if err := q.db.UpdateSessionPhase(context.Background(), q.sessionID, string(q.phase), q.iteration); err != nil {
 			q.logger.Printf("⚠ Warning: failed to save session phase: %v", err)
 		}
 	}
@@ -1008,9 +1008,9 @@ func (q *Queen) Close() error {
 		// Save current phase for potential resumption
 		q.savePhase()
 		// Only set status to 'stopped' if current status is not terminal
-		if session, err := q.db.GetSession(q.sessionID); err == nil {
+		if session, err := q.db.GetSession(context.Background(), q.sessionID); err == nil {
 			if session.Status != "done" && session.Status != "failed" {
-				q.db.UpdateSessionStatus(q.sessionID, "stopped")
+				q.db.UpdateSessionStatus(context.Background(), q.sessionID, "stopped")
 			}
 		}
 	}

@@ -174,7 +174,7 @@ func cmdResume(ctx context.Context, cmd *cli.Command) error {
 	}
 	defer db.Close()
 
-	session, err := db.FindResumableSession()
+	session, err := db.FindResumableSession(ctx)
 	if err != nil {
 		return fmt.Errorf("no interrupted session found to resume. Run 'queen-bee run <objective>' to start a new session")
 	}
@@ -206,7 +206,7 @@ func cmdResume(ctx context.Context, cmd *cli.Command) error {
 	defer q.Close()
 
 	// Resume the session
-	objective, err := q.ResumeSession(session.ID)
+	objective, err := q.ResumeSession(ctx, session.ID)
 	if err != nil {
 		return fmt.Errorf("resume session: %w", err)
 	}
