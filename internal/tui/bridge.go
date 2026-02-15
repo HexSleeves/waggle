@@ -10,9 +10,12 @@ import (
 )
 
 // Program wraps a Bubble Tea program with helper methods for sending events.
+// Messages sent before Run() are buffered and replayed once the program starts.
 type Program struct {
 	program *tea.Program
 	mu      sync.Mutex
+	started bool
+	buffer  []tea.Msg
 }
 
 // NewProgram creates a TUI program.
@@ -22,13 +25,35 @@ func NewProgram(objective string, maxTurns int) *Program {
 	return &Program{program: p}
 }
 
-// Run starts the TUI (blocking).
+// Run starts the TUI (blocking). Replays buffered messages first.
 func (p *Program) Run() (tea.Model, error) {
+	// Mark as started and flush buffer
+	p.mu.Lock()
+	p.started = true
+	buffered := make([]tea.Msg, len(p.buffer))
+	copy(buffered, p.buffer)
+	p.buffer = nil
+	p.mu.Unlock()
+
+	// Replay buffered messages in a goroutine (Run must be called first)
+	go func() {
+		for _, msg := range buffered {
+			p.program.Send(msg)
+		}
+	}()
+
 	return p.program.Run()
 }
 
-// Send sends a message to the TUI.
+// Send sends a message to the TUI. Buffers if the program hasn't started yet.
 func (p *Program) Send(msg tea.Msg) {
+	p.mu.Lock()
+	if !p.started {
+		p.buffer = append(p.buffer, msg)
+		p.mu.Unlock()
+		return
+	}
+	p.mu.Unlock()
 	p.program.Send(msg)
 }
 
