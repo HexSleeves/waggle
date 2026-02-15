@@ -329,7 +329,13 @@ func (s *DB) UpdateTaskRetryCount(sessionID, taskID string, retryCount int) erro
 
 // UpdateTaskErrorType sets the last error type for a task.
 func (s *DB) UpdateTaskErrorType(sessionID, taskID, errorType string) error {
-	_, err := s.db.Exec(
+	tx, err := s.db.Begin()
+	if err != nil {
+		return fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback() // no-op after commit
+
+	_, err = tx.Exec(
 		`UPDATE tasks SET result_data = COALESCE(result_data, '{}') WHERE id = ? AND session_id = ?`,
 		taskID, sessionID,
 	)
@@ -338,15 +344,25 @@ func (s *DB) UpdateTaskErrorType(sessionID, taskID, errorType string) error {
 	}
 	// Store error type in a separate column by using a JSON patch approach
 	// For now, we'll store it in the result_data field as JSON
-	_, err = s.db.Exec(
+	_, err = tx.Exec(
 		`UPDATE tasks SET result_data = json_set(COALESCE(result_data, '{}'), '$.last_error_type', ?) WHERE id = ? AND session_id = ?`,
 		errorType, taskID, sessionID,
 	)
-	return err
+	if err != nil {
+		return err
+	}
+
+	return tx.Commit()
 }
 
 func (s *DB) IncrementTaskRetry(sessionID, taskID string) (int, error) {
-	_, err := s.db.Exec(
+	tx, err := s.db.Begin()
+	if err != nil {
+		return 0, fmt.Errorf("begin transaction: %w", err)
+	}
+	defer tx.Rollback() // no-op after commit
+
+	_, err = tx.Exec(
 		`UPDATE tasks SET retry_count = retry_count + 1 WHERE id = ? AND session_id = ?`,
 		taskID, sessionID,
 	)
@@ -354,8 +370,11 @@ func (s *DB) IncrementTaskRetry(sessionID, taskID string) (int, error) {
 		return 0, err
 	}
 	var count int
-	err = s.db.QueryRow(`SELECT retry_count FROM tasks WHERE id = ? AND session_id = ?`, taskID, sessionID).Scan(&count)
-	return count, err
+	err = tx.QueryRow(`SELECT retry_count FROM tasks WHERE id = ? AND session_id = ?`, taskID, sessionID).Scan(&count)
+	if err != nil {
+		return 0, err
+	}
+	return count, tx.Commit()
 }
 
 func (s *DB) GetTask(sessionID, taskID string) (*TaskRow, error) {
