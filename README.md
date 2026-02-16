@@ -6,6 +6,14 @@
   <strong>Multi-agent orchestration through the waggle dance.</strong>
 </p>
 
+<p align="center">
+  <a href="#installation">Installation</a> •
+  <a href="#quick-start">Quick Start</a> •
+  <a href="#architecture">Architecture</a> •
+  <a href="#configuration">Configuration</a> •
+  <a href="#documentation">Documentation</a>
+</p>
+
 ---
 
 ## What is Waggle?
@@ -40,9 +48,143 @@ The Queen also has `read_file` and `list_files` tools to inspect the project dir
 
 A **legacy mode** (`--legacy`) is available that uses a structured Plan → Delegate → Monitor → Review → Replan loop instead of autonomous tool use.
 
-## Architecture
+---
+
+## Installation
+
+### Prerequisites
+
+- **Go 1.21+** — [Install Go](https://go.dev/doc/install)
+- **An LLM API key** — Anthropic, OpenAI, or Gemini (for the Queen)
+- **A worker CLI** (optional) — Claude Code, Kimi, Codex, etc. (or use `exec` for shell commands)
+
+### Install from GitHub
 
 ```bash
+# Install directly with go install
+go install github.com/HexSleeves/waggle/cmd/waggle@latest
+
+# Verify installation
+waggle --version
+```
+
+### Build from Source
+
+```bash
+# Clone the repository
+git clone https://github.com/HexSleeves/waggle.git
+cd waggle
+
+# Build the binary
+go build -o waggle ./cmd/waggle/
+
+# Optional: Install to your GOPATH/bin
+go install ./cmd/waggle/
+
+# Or move to a directory in your PATH
+sudo mv waggle /usr/local/bin/
+```
+
+### Run Locally (Development)
+
+```bash
+# Clone and enter the repo
+git clone https://github.com/HexSleeves/waggle.git
+cd waggle
+
+# Run directly without building
+go run ./cmd/waggle/ --help
+
+# Run tests
+go test ./...
+
+# Run with race detector
+go test -race ./...
+
+# Format and lint
+gofmt -w .
+go vet ./...
+```
+
+---
+
+## Quick Start
+
+### 1. Initialize a Hive
+
+```bash
+cd /path/to/your/project
+waggle init
+```
+
+This creates a `waggle.json` configuration file in your project.
+
+### 2. Set Your API Key
+
+```bash
+# Option 1: Environment variable (recommended)
+export ANTHROPIC_API_KEY="sk-ant-..."
+
+# Option 2: Edit waggle.json directly
+# Set queen.api_key in the config file
+```
+
+### 3. Run Your First Objective
+
+```bash
+# Basic run — Queen plans and workers execute
+waggle run "Add error handling to all database functions"
+
+# Specify a worker adapter
+waggle --adapter kimi run "Write unit tests for the auth module"
+
+# Use shell commands directly (no AI CLI needed)
+waggle --adapter exec run "Run the test suite and fix any failures"
+
+# Increase parallelism
+waggle --workers 8 run "Refactor all handlers to use the new logger"
+```
+
+### 4. Monitor Progress
+
+Waggle displays a **TUI dashboard** showing:
+- Queen's reasoning and tool calls
+- Task progress and dependencies
+- Worker status and output
+
+Use `--plain` for CI environments or piped output:
+
+```bash
+waggle --plain run "Update documentation"
+```
+
+### Example Commands
+
+```bash
+# Run with pre-defined tasks (skips AI planning)
+waggle --tasks tasks.json run "Execute CI pipeline"
+
+# Force legacy orchestration mode
+waggle --legacy run "Review code for security issues"
+
+# Check session status
+waggle status
+
+# Resume a previous session
+waggle resume abc123
+
+# List recent sessions
+waggle sessions
+
+# View configuration
+waggle config
+```
+
+---
+
+## Architecture
+
+```
 ┌─────────────────────────────────────────────────────────────────┐
 │                       USER OBJECTIVE                            │
 │              "Refactor the auth module to use JWT"              │
@@ -78,109 +220,33 @@ A **legacy mode** (`--legacy`) is available that uses a structured Plan → Dele
      └────────────────────────────────────────────────┘
 ```
 
-## Quick Start
+### 📚 Interactive Architecture Documentation
 
-```bash
-# Build
-go build -o waggle ./cmd/waggle/
+**[View the full architecture documentation →](ARCHITECTURE.md)**
 
-# Initialize a hive in your project
-cd /path/to/your/project
-waggle init
+For an interactive visualization with Mermaid diagrams, see:
+**[architecture-diagram.html](architecture-diagram.html)** — System overview, execution flow, task state machine, and module breakdown.
 
-# Set your Queen's LLM provider in waggle.json
-# (anthropic, openai, codex, gemini-api — any provider with tool-use support)
+### Internal Modules
 
-# Run with an objective — Queen plans + workers execute
-waggle run "Refactor the auth module to use JWT tokens"
+| Module | Purpose |
+|--------|---------|
+| `queen` | 👑 Central orchestrator — autonomous LLM agent loop |
+| `llm` | 🧠 Provider-agnostic LLM interface (Anthropic, OpenAI, Gemini) |
+| `task` | 📋 Task graph with dependency DAG and status tracking |
+| `worker` | 🐝 Worker pool for parallel CLI process execution |
+| `adapter` | 🔌 CLI wrappers (Claude, Kimi, Codex, Gemini, Exec) |
+| `bus` | 📨 In-process pub/sub event system |
+| `blackboard` | 📝 Shared memory for inter-agent coordination |
+| `state` | 💾 SQLite persistence (WAL mode) |
+| `safety` | 🛡️ Path allowlist & command blocklist |
+| `config` | ⚙️ Configuration management |
+| `compact` | 📦 Context window compaction |
+| `errors` | 🚨 Error classification & retry logic |
+| `tui` | 🖥️ Bubble Tea terminal dashboard |
+| `output` | 📤 Output mode management |
 
-# Specify a worker adapter and worker count
-waggle --adapter kimi --workers 8 run "Add unit tests for all handlers"
-
-# Use the exec adapter for raw shell commands (no AI CLI needed)
-waggle --adapter exec run "go test ./..."
-
-# Pre-defined tasks from a file (skips Queen planning)
-waggle --adapter exec --tasks tasks.json run "Run analysis pipeline"
-
-# Plain log output instead of TUI
-waggle --plain run "Review the codebase"
-
-# Force legacy orchestration loop (no agent mode)
-waggle --legacy run "Fix all lint warnings"
-
-# Check session status
-waggle status
-
-# Resume a previous session
-waggle resume <session-id>
-```
-
-When running in a terminal, Waggle displays a **TUI dashboard** showing the Queen's reasoning, tool calls, task progress, and worker status in real time. Use `--plain` for CI or piped output.
-
-## Task File Format
-
-Pre-define parallel tasks with dependencies in JSON:
-
-```json
-[
-  {
-    "id": "lint",
-    "type": "test",
-    "title": "Run linter",
-    "description": "golangci-lint run ./...",
-    "priority": 2
-  },
-  {
-    "id": "test",
-    "type": "test",
-    "title": "Run tests",
-    "description": "go test -race ./...",
-    "priority": 3,
-    "depends_on": ["lint"]
-  },
-  {
-    "id": "build",
-    "type": "code",
-    "title": "Build binary",
-    "description": "go build -o waggle ./cmd/waggle/",
-    "priority": 1,
-    "depends_on": ["test"]
-  }
-]
-```
-
-Tasks respect dependency ordering — `test` won't start until `lint` completes. Independent tasks run in parallel up to the configured worker limit.
-
-## Worker Adapters
-
-Waggle wraps coding agent CLIs behind a uniform interface. The `workers.default_adapter` config controls which adapter is used for all task assignments.
-
-| Adapter | CLI | Invocation | Notes |
-| ------- | ---------- | ----------- | ----------- |
-| `claude-code` | Claude Code | `claude -p "<prompt>"` | |
-| `kimi` | Kimi Code | `kimi --print --final-message-only -p "<prompt>"` | Fast (~60s/task) |
-| `gemini` | Gemini CLI | `echo "<prompt>" \| gemini` | Pipe-based |
-| `codex` | Codex | `codex exec "<prompt>"` | |
-| `opencode` | OpenCode | `opencode run "<prompt>"` | |
-| `exec` | Shell | `bash -c "<description>"` | No AI — runs commands directly |
-
-Adapters are configured in `waggle.json` and can be customized with arbitrary commands, args, and environment variables.
-
-## Queen LLM Providers
-
-The Queen's own LLM is separate from worker adapters. Providers with **tool-use support** enable agent mode; CLI-based providers fall back to legacy mode.
-
-| Provider | Config Value | Tool Use | Notes |
-| -------- | ------------ | -------- | ----- |
-| Anthropic API | `"anthropic"` | ✅ | Needs `ANTHROPIC_API_KEY` |
-| OpenAI API | `"openai"` | ✅ | Needs `OPENAI_API_KEY` |
-| Codex (OpenAI) | `"codex"` | ✅ | Uses OpenAI-compatible API |
-| Gemini API | `"gemini-api"` | ✅ | Needs `GEMINI_API_KEY` |
-| Kimi CLI | `"kimi"` | ❌ | Legacy mode only |
-| Claude CLI | `"claude-cli"` | ❌ | Legacy mode only |
-| Gemini CLI | `"gemini"` | ❌ | Legacy mode only |
-| OpenCode CLI | `"opencode"` | ❌ | Legacy mode only |
+---
 
 ## Configuration
 
@@ -221,128 +287,190 @@ Running `waggle init` creates a `waggle.json` configuration file:
 }
 ```
 
-| Section | Key Fields | Description |
-| ------- | ---------- | ----------- |
-| `queen` | `provider`, `model` | The Queen's own LLM. See [Queen LLM Providers](#queen-llm-providers) |
-| `queen` | `api_key`, `base_url` | API credentials (can also use env vars like `ANTHROPIC_API_KEY`) |
-| `queen` | `max_iterations` | Hard cap on the agent loop turns |
-| `queen` | `compact_after_messages` | Compact conversation history after N messages |
-| `workers` | `max_parallel` | Size of the worker pool (the swarm) |
-| `workers` | `default_adapter` | Which adapter workers use for task execution |
-| `workers` | `max_retries` | How many times a failed task is retried before giving up |
-| `safety` | `allowed_paths` | Directories workers may touch (resolved relative to project root) |
-| `safety` | `blocked_commands` | Substring patterns that will be rejected by the safety guard |
+### Queen LLM Providers
 
-## Project Structure
+The Queen's own LLM is separate from worker adapters. Providers with **tool-use support** enable agent mode:
 
-```bash
-waggle/
-├── cmd/waggle/              # CLI entry point
-│   ├── main.go
-│   ├── app.go               # urfave/cli app definition + flags
-│   ├── commands.go           # init, run, resume, config handlers
-│   ├── status.go             # session / task status display
-│   └── tasks.go              # task file loader
-├── internal/
-│   ├── queen/               # 👑 The Queen — orchestration
-│   │   ├── queen.go          #   Legacy Plan → Delegate → Monitor → Review loop
-│   │   ├── agent.go          #   Agent mode — autonomous tool-using LLM loop
-│   │   ├── tools.go          #   Tool definitions + handlers (11 tools)
-│   │   ├── prompt.go         #   System prompt builder for agent mode
-│   │   ├── review.go         #   LLM-backed result evaluation
-│   │   └── replan.go         #   LLM-backed replanning
-│   ├── llm/                 # 🧠 Queen's LLM client
-│   │   ├── client.go         #   Client + ToolClient interfaces
-│   │   ├── types.go          #   ToolDef, ToolCall, ToolResult, Response types
-│   │   ├── anthropic.go      #   Anthropic API (tool-use)
-│   │   ├── openai.go         #   OpenAI-compatible API (tool-use)
-│   │   ├── gemini.go         #   Google Gemini API (tool-use)
-│   │   ├── cli.go            #   CLI-based LLM wrapper (no tool-use)
-│   │   └── factory.go        #   Provider factory
-│   ├── tui/                 # 🖥️ Terminal dashboard
-│   │   ├── model.go          #   Bubble Tea model + update loop
-│   │   ├── view.go           #   Queen panel, task panel, status bar
-│   │   ├── events.go         #   TUI message types
-│   │   ├── bridge.go         #   Log → TUI message routing + buffering
-│   │   └── styles.go         #   Lipgloss styles
-│   ├── worker/              # 🐝 Worker pool manager
-│   │   └── worker.go
-│   ├── adapter/             # CLI wrapper adapters
-│   │   ├── adapter.go        #   Registry + TaskRouter
-│   │   ├── claude.go         #   Claude Code
-│   │   ├── kimi.go           #   Kimi Code
-│   │   ├── gemini.go         #   Gemini CLI
-│   │   ├── codex.go          #   Codex
-│   │   ├── opencode.go       #   OpenCode
-│   │   └── exec.go           #   Direct shell execution
-│   ├── task/                # 📌 Task graph with dependency tracking
-│   │   └── task.go
-│   ├── state/               # 💾 SQLite persistence (WAL mode)
-│   │   └── db.go
-│   ├── bus/                 # 📨 In-process pub/sub message bus
-│   │   └── bus.go
-│   ├── blackboard/          # 📋 Shared memory for inter-agent comms
-│   │   └── blackboard.go
-│   ├── safety/              # 🛡️ Path restriction + command filtering
-│   │   └── safety.go
-│   ├── config/              # ⚙️ Configuration management
-│   │   └── config.go
-│   ├── compact/             # 📦 Context window compaction
-│   │   └── compact.go
-│   └── errors/              # Error classification + retry logic
-│       └── errors.go
-├── waggle.json              # Configuration file
-├── go.mod
-└── README.md
+| Provider | Config Value | Tool Use | Environment Variable |
+| -------- | ------------ | -------- | -------------------- |
+| Anthropic API | `"anthropic"` | ✅ | `ANTHROPIC_API_KEY` |
+| OpenAI API | `"openai"` | ✅ | `OPENAI_API_KEY` |
+| Codex (OpenAI) | `"codex"` | ✅ | `OPENAI_API_KEY` |
+| Gemini API | `"gemini-api"` | ✅ | `GEMINI_API_KEY` |
+| Kimi CLI | `"kimi"` | ❌ | — |
+| Claude CLI | `"claude-cli"` | ❌ | — |
+| Gemini CLI | `"gemini"` | ❌ | — |
+
+### Worker Adapters
+
+| Adapter | CLI | Command | Notes |
+| ------- | --- | ------- | ----- |
+| `claude-code` | Claude Code | `claude -p "<prompt>"` | Default |
+| `kimi` | Kimi Code | `kimi --print --final-message-only -p "<prompt>"` | Fast (~60s/task) |
+| `gemini` | Gemini CLI | `echo "<prompt>" \| gemini` | Pipe-based |
+| `codex` | Codex | `codex exec "<prompt>"` | |
+| `opencode` | OpenCode | `opencode run "<prompt>"` | |
+| `exec` | Shell | `bash -c "<description>"` | No AI — runs commands directly |
+
+### Configuration Options
+
+| Section | Key | Description |
+| ------- | --- | ----------- |
+| `queen.provider` | LLM provider | `anthropic`, `openai`, `gemini-api`, etc. |
+| `queen.model` | Model name | e.g., `claude-sonnet-4-20250514` |
+| `queen.api_key` | API key | Or use environment variable |
+| `queen.max_iterations` | Loop limit | Hard cap on agent turns |
+| `workers.max_parallel` | Pool size | Concurrent workers |
+| `workers.default_adapter` | Default adapter | Which CLI to use |
+| `workers.max_retries` | Retry limit | Per-task retry count |
+| `safety.allowed_paths` | Path allowlist | Directories workers can touch |
+| `safety.blocked_commands` | Command blocklist | Patterns to reject |
+
+---
+
+## Task File Format
+
+Pre-define parallel tasks with dependencies:
+
+```json
+[
+  {
+    "id": "lint",
+    "type": "test",
+    "title": "Run linter",
+    "description": "golangci-lint run ./...",
+    "priority": 2
+  },
+  {
+    "id": "test",
+    "type": "test",
+    "title": "Run tests",
+    "description": "go test -race ./...",
+    "priority": 3,
+    "depends_on": ["lint"]
+  },
+  {
+    "id": "build",
+    "type": "code",
+    "title": "Build binary",
+    "description": "go build -o waggle ./cmd/waggle/",
+    "priority": 1,
+    "depends_on": ["test"]
+  }
+]
 ```
+
+Run with:
+```bash
+waggle --tasks tasks.json run "Execute build pipeline"
+```
+
+---
 
 ## Queen's Tools
 
 In agent mode, the Queen has 11 tools:
 
 | Tool | Purpose |
-| ------- | ----------- |
-| `create_tasks` | Create tasks in the graph with types, priorities, dependencies, constraints, allowed paths |
-| `assign_task` | Assign a pending task to a worker (checks deps, pool capacity, uses configured adapter) |
-| `wait_for_workers` | Block until one or more workers complete (with configurable timeout) |
+| ---- | ------- |
+| `create_tasks` | Create tasks with types, priorities, dependencies |
+| `assign_task` | Dispatch a pending task to a worker |
+| `wait_for_workers` | Block until workers complete |
 | `get_status` | Get current status of all tasks |
-| `get_task_output` | Read a completed or failed task's full output |
+| `get_task_output` | Read task output or error |
 | `approve_task` | Mark a task as approved |
-| `reject_task` | Reject a task with feedback, re-queue for retry |
-| `read_file` | Read a file from the project directory (safety-checked) |
-| `list_files` | List directory contents with file sizes |
-| `complete` | Declare the objective complete with a summary |
-| `fail` | Declare the objective failed with a reason |
+| `reject_task` | Reject with feedback, re-queue for retry |
+| `read_file` | Read a project file (safety-checked) |
+| `list_files` | List directory contents |
+| `complete` | Declare objective complete |
+| `fail` | Declare objective failed |
+
+---
 
 ## Persistence
 
-All state lives in the `.hive/` directory:
+All state lives in `.hive/`:
 
-```bash
+```
 .hive/
 └── hive.db          # SQLite database (WAL mode)
 ```
 
 The database stores:
+- **Sessions** — objective, status, phase, iteration count
+- **Tasks** — full state including results, retries, errors
+- **Events** — append-only audit log
+- **Messages** — conversation history for session resume
 
-- **Sessions** — objective, status, phase, iteration count, timestamps
-- **Tasks** — full task state including results, retries, error history
-- **Events** — append-only log of every bus message for auditability
-- **KV store** — agent conversation turns for session resume
+Resume interrupted sessions:
+```bash
+waggle resume <session-id>
+```
 
-SQLite with WAL mode allows concurrent reads while the Queen writes, with a busy timeout of 5 seconds for contention handling. Sessions can be resumed after interruption with `waggle resume <session-id>`.
+---
 
 ## Safety
 
-The **Safety Guard** (`internal/safety`) enforces constraints on every worker operation:
+The **Safety Guard** enforces constraints on every worker operation:
 
-- **Path allowlist** — workers can only touch files within configured directories. Paths are resolved to absolute form and checked with prefix matching. By default, only the project root is allowed.
-- **Command blocklist** — commands are checked against substring patterns (e.g., `rm -rf /`, `sudo rm`). Any match is rejected before execution.
-- **File size limits** — prevents workers from reading or writing files above a configurable threshold (default: 10 MB).
-- **Read-only mode** — when enabled, blocks all write operations.
-- **Scope constraints** — every task gets injected rules: no out-of-scope changes, no unsolicited refactoring, no signature changes.
+- **Path allowlist** — workers can only touch files within configured directories
+- **Command blocklist** — rejects commands matching dangerous patterns
+- **File size limits** — prevents reading/writing files above threshold (default: 10 MB)
+- **Read-only mode** — blocks all write operations when enabled
 
-The guard is injected into every adapter invocation, so safety is enforced regardless of which CLI backend is in use.
+---
+
+## Project Structure
+
+```
+waggle/
+├── cmd/waggle/              # CLI entry point
+│   ├── main.go
+│   ├── app.go               # urfave/cli app + flags
+│   ├── commands.go          # init, run, resume handlers
+│   └── status.go            # session/task status display
+├── internal/
+│   ├── queen/               # 👑 Orchestration
+│   ├── llm/                 # 🧠 LLM clients
+│   ├── task/                # 📋 Task graph
+│   ├── worker/              # 🐝 Worker pool
+│   ├── adapter/             # 🔌 CLI adapters
+│   ├── bus/                 # 📨 Event bus
+│   ├── blackboard/          # 📝 Shared memory
+│   ├── state/               # 💾 SQLite persistence
+│   ├── safety/              # 🛡️ Security guard
+│   ├── config/              # ⚙️ Configuration
+│   ├── compact/             # 📦 Context compaction
+│   ├── errors/              # 🚨 Error handling
+│   ├── tui/                 # 🖥️ Terminal UI
+│   └── output/              # 📤 Output management
+├── ARCHITECTURE.md          # Detailed module documentation
+├── architecture-diagram.html # Interactive diagrams
+├── waggle.json              # Configuration file
+└── go.mod
+```
+
+---
+
+## Documentation
+
+- **[ARCHITECTURE.md](ARCHITECTURE.md)** — Detailed breakdown of all internal modules
+- **[architecture-diagram.html](architecture-diagram.html)** — Interactive Mermaid diagrams
+- **[TODO.md](TODO.md)** — Development roadmap and task tracking
+
+---
+
+## Contributing
+
+1. Fork the repository
+2. Create a feature branch (`git checkout -b feature/amazing-feature`)
+3. Run tests (`go test ./...`)
+4. Format code (`gofmt -w .`)
+5. Commit changes (`git commit -m 'Add amazing feature'`)
+6. Push to branch (`git push origin feature/amazing-feature`)
+7. Open a Pull Request
+
+---
 
 ## License
 
