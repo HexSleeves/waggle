@@ -66,8 +66,16 @@ type geminiGenConfig struct {
 }
 
 type geminiResponse struct {
-	Candidates []geminiCandidate `json:"candidates"`
-	Error      *geminiError      `json:"error,omitempty"`
+	Candidates    []geminiCandidate `json:"candidates"`
+	Error         *geminiError      `json:"error,omitempty"`
+	UsageMetadata *geminiUsage      `json:"usageMetadata,omitempty"`
+	ModelVersion  string            `json:"modelVersion,omitempty"`
+}
+
+type geminiUsage struct {
+	PromptTokenCount     int `json:"promptTokenCount"`
+	CandidatesTokenCount int `json:"candidatesTokenCount"`
+	TotalTokenCount      int `json:"totalTokenCount"`
 }
 
 type geminiCandidate struct {
@@ -266,6 +274,13 @@ func (c *GeminiClient) ChatWithTools(ctx context.Context, systemPrompt string,
 	}
 
 	result := &Response{StopReason: stopReason}
+	result.Model = resp.ModelVersion
+	if resp.UsageMetadata != nil {
+		result.Usage = Usage{
+			InputTokens:  resp.UsageMetadata.PromptTokenCount,
+			OutputTokens: resp.UsageMetadata.CandidatesTokenCount,
+		}
+	}
 
 	// toolCallCounter generates stable IDs since Gemini doesn't provide them
 	tcID := 0

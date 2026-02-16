@@ -2,6 +2,7 @@ package state
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
@@ -19,8 +20,11 @@ func TestOpenDB(t *testing.T) {
 	if db == nil {
 		t.Fatal("OpenDB returned nil")
 	}
-	if db.db == nil {
-		t.Error("db.db is nil")
+	if db.writer == nil {
+		t.Error("db.writer is nil")
+	}
+	if db.reader == nil {
+		t.Error("db.reader is nil")
 	}
 
 	// Verify database file was created
@@ -921,5 +925,145 @@ func TestStopSessionAlreadyStopped(t *testing.T) {
 	session, _ = db.GetSession(ctx, "session-1")
 	if session.Status != "stopped" {
 		t.Errorf("Expected status 'stopped', got %q", session.Status)
+	}
+}
+
+func TestConcurrentReadWrite(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := OpenDB(tmpDir)
+	if err != nil {
+		t.Fatalf("OpenDB failed: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if err := db.CreateSession(ctx, "session-conc", "Concurrent test"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Pre-insert tasks
+	for i := 0; i < 20; i++ {
+		task := TaskRow{
+			ID:     fmt.Sprintf("task-%d", i),
+			Type:   "code",
+			Status: "pending",
+			Title:  fmt.Sprintf("Task %d", i),
+		}
+		if err := db.InsertTask(ctx, "session-conc", task); err != nil {
+			t.Fatalf("InsertTask failed: %v", err)
+		}
+	}
+
+	// Writer updates tasks while reader queries simultaneously
+	writeDone := make(chan error, 1)
+	readDone := make(chan error, 1)
+
+	// Writer goroutine: update statuses
+	go func() {
+		for i := 0; i < 20; i++ {
+			if err := db.UpdateTaskStatus(ctx, "session-conc", fmt.Sprintf("task-%d", i), "running"); err != nil {
+				writeDone <- err
+				return
+			}
+		}
+		writeDone <- nil
+	}()
+
+	// Reader goroutine: query while writes happen
+	go func() {
+		for i := 0; i < 50; i++ {
+			_, err := db.GetTasks(ctx, "session-conc")
+			if err != nil {
+				readDone <- err
+				return
+			}
+			time.Sleep(time.Millisecond)
+		}
+		readDone <- nil
+	}()
+
+	if err := <-writeDone; err != nil {
+		t.Fatalf("Writer failed: %v", err)
+	}
+	if err := <-readDone; err != nil {
+		t.Fatalf("Reader failed during concurrent write: %v", err)
+	}
+
+	// Verify all tasks are updated
+	tasks, err := db.GetTasks(ctx, "session-conc")
+	if err != nil {
+		t.Fatalf("GetTasks failed: %v", err)
+	}
+	if len(tasks) != 20 {
+		t.Errorf("Expected 20 tasks, got %d", len(tasks))
+	}
+}
+
+func TestReaderWriterSeparation(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := OpenDB(tmpDir)
+	if err != nil {
+		t.Fatalf("OpenDB failed: %v", err)
+	}
+	defer db.Close()
+
+	if db.writer == nil {
+		t.Fatal("writer pool is nil")
+	}
+	if db.reader == nil {
+		t.Fatal("reader pool is nil")
+	}
+	if db.writer == db.reader {
+		t.Fatal("writer and reader should be different pools")
+	}
+
+	ctx := context.Background()
+
+	if err := db.CreateSession(ctx, "session-rw", "RW test"); err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+
+	session, err := db.GetSession(ctx, "session-rw")
+	if err != nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if session.ID != "session-rw" {
+		t.Errorf("Expected session-rw, got %s", session.ID)
+	}
+
+	if err := db.AppendMessage(ctx, "session-rw", 0, "user", "hello", ""); err != nil {
+		t.Fatalf("AppendMessage failed: %v", err)
+	}
+	if err := db.AppendMessage(ctx, "session-rw", 1, "assistant", "world", ""); err != nil {
+		t.Fatalf("AppendMessage failed: %v", err)
+	}
+
+	msgs, err := db.LoadMessages(ctx, "session-rw")
+	if err != nil {
+		t.Fatalf("LoadMessages failed: %v", err)
+	}
+	if len(msgs) != 2 {
+		t.Fatalf("Expected 2 messages, got %d", len(msgs))
+	}
+	if msgs[0].Role != "user" || msgs[0].Content != "hello" {
+		t.Errorf("Unexpected first message: %+v", msgs[0])
+	}
+	if msgs[1].Role != "assistant" || msgs[1].Content != "world" {
+		t.Errorf("Unexpected second message: %+v", msgs[1])
+	}
+
+	if err := db.MarkMessageExcluded(ctx, "session-rw", 0); err != nil {
+		t.Fatalf("MarkMessageExcluded failed: %v", err)
+	}
+
+	msgs, err = db.LoadMessages(ctx, "session-rw")
+	if err != nil {
+		t.Fatalf("LoadMessages after exclude failed: %v", err)
+	}
+	if len(msgs) != 1 {
+		t.Fatalf("Expected 1 message after exclude, got %d", len(msgs))
+	}
+	if msgs[0].SequenceID != 1 {
+		t.Errorf("Expected sequence_id 1, got %d", msgs[0].SequenceID)
 	}
 }

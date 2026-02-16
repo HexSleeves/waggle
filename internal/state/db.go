@@ -14,8 +14,9 @@ import (
 
 // DB is a SQLite-backed state store replacing the JSONL + JSON files
 type DB struct {
-	db   *sql.DB
-	path string
+	writer *sql.DB
+	reader *sql.DB
+	path   string
 }
 
 // OpenDB opens (or creates) the hive SQLite database
@@ -27,17 +28,46 @@ func OpenDB(hiveDir string) (*DB, error) {
 	dbPath := filepath.Join(hiveDir, "hive.db")
 	dsn := fmt.Sprintf("file:%s?_journal_mode=WAL&_busy_timeout=5000&_synchronous=NORMAL", dbPath)
 
-	db, err := sql.Open("sqlite", dsn)
+	writer, err := sql.Open("sqlite", dsn)
 	if err != nil {
-		return nil, fmt.Errorf("open db: %w", err)
+		return nil, fmt.Errorf("open writer db: %w", err)
+	}
+	writer.SetMaxOpenConns(1)
+	// Ensure WAL mode and busy timeout are set on the writer connection
+	for _, pragma := range []string{
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA busy_timeout=5000",
+		"PRAGMA synchronous=NORMAL",
+	} {
+		if _, err := writer.Exec(pragma); err != nil {
+			writer.Close()
+			return nil, fmt.Errorf("writer %s: %w", pragma, err)
+		}
 	}
 
-	// Single connection for writes, WAL allows concurrent reads
-	db.SetMaxOpenConns(2)
+	reader, err := sql.Open("sqlite", dsn)
+	if err != nil {
+		writer.Close()
+		return nil, fmt.Errorf("open reader db: %w", err)
+	}
+	reader.SetMaxOpenConns(3)
+	// Ensure WAL mode and busy timeout are set on reader connections
+	for _, pragma := range []string{
+		"PRAGMA journal_mode=WAL",
+		"PRAGMA busy_timeout=5000",
+		"PRAGMA query_only=1",
+	} {
+		if _, err := reader.Exec(pragma); err != nil {
+			writer.Close()
+			reader.Close()
+			return nil, fmt.Errorf("reader %s: %w", pragma, err)
+		}
+	}
 
-	s := &DB{db: db, path: dbPath}
+	s := &DB{writer: writer, reader: reader, path: dbPath}
 	if err := s.migrate(); err != nil {
-		db.Close()
+		writer.Close()
+		reader.Close()
 		return nil, fmt.Errorf("migrate: %w", err)
 	}
 
@@ -109,8 +139,22 @@ func (s *DB) migrate() error {
 		key   TEXT PRIMARY KEY,
 		value TEXT
 	);
+
+	CREATE TABLE IF NOT EXISTS messages (
+		id          INTEGER PRIMARY KEY AUTOINCREMENT,
+		session_id  TEXT NOT NULL,
+		sequence_id INTEGER NOT NULL,
+		role        TEXT NOT NULL,
+		content     TEXT NOT NULL,
+		usage_data  TEXT,
+		excluded    INTEGER DEFAULT 0,
+		created_at  TEXT NOT NULL,
+		UNIQUE(session_id, sequence_id),
+		FOREIGN KEY (session_id) REFERENCES sessions(id)
+	);
+	CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id);
 	`
-	_, err := s.db.Exec(ddl)
+	_, err := s.writer.Exec(ddl)
 	if err != nil {
 		return err
 	}
@@ -120,7 +164,7 @@ func (s *DB) migrate() error {
 		"ALTER TABLE tasks ADD COLUMN constraints TEXT",
 		"ALTER TABLE tasks ADD COLUMN allowed_paths TEXT",
 	} {
-		_, _ = s.db.Exec(col) // ignore "duplicate column" errors
+		_, _ = s.writer.Exec(col) // ignore "duplicate column" errors
 	}
 
 	return nil
@@ -137,7 +181,7 @@ type SessionInfoFull struct {
 
 // GetSessionFull retrieves session info including phase and iteration.
 func (s *DB) GetSessionFull(ctx context.Context, id string) (*SessionInfoFull, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, objective, status, created_at, updated_at, COALESCE(phase, 'plan'), COALESCE(iteration, 0) FROM sessions WHERE id = ?`, id)
+	row := s.reader.QueryRowContext(ctx, `SELECT id, objective, status, created_at, updated_at, COALESCE(phase, 'plan'), COALESCE(iteration, 0) FROM sessions WHERE id = ?`, id)
 	var si SessionInfoFull
 	if err := row.Scan(&si.ID, &si.Objective, &si.Status, &si.CreatedAt, &si.UpdatedAt, &si.Phase, &si.Iteration); err != nil {
 		return nil, err
@@ -147,7 +191,7 @@ func (s *DB) GetSessionFull(ctx context.Context, id string) (*SessionInfoFull, e
 
 func (s *DB) CreateSession(ctx context.Context, id, objective string) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.writer.ExecContext(ctx,
 		`INSERT INTO sessions (id, objective, status, created_at, updated_at) VALUES (?, ?, 'running', ?, ?)`,
 		id, objective, now, now,
 	)
@@ -156,7 +200,7 @@ func (s *DB) CreateSession(ctx context.Context, id, objective string) error {
 
 func (s *DB) UpdateSessionStatus(ctx context.Context, id, status string) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.writer.ExecContext(ctx,
 		`UPDATE sessions SET status = ?, updated_at = ? WHERE id = ?`,
 		status, now, id,
 	)
@@ -165,7 +209,7 @@ func (s *DB) UpdateSessionStatus(ctx context.Context, id, status string) error {
 
 func (s *DB) StopSession(id string) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.db.Exec(
+	_, err := s.writer.Exec(
 		`UPDATE sessions SET status = 'stopped', updated_at = ? WHERE id = ?`,
 		now, id,
 	)
@@ -181,7 +225,7 @@ type SessionInfo struct {
 }
 
 func (s *DB) GetSession(ctx context.Context, id string) (*SessionInfo, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, objective, status, created_at, updated_at FROM sessions WHERE id = ?`, id)
+	row := s.reader.QueryRowContext(ctx, `SELECT id, objective, status, created_at, updated_at FROM sessions WHERE id = ?`, id)
 	var si SessionInfo
 	if err := row.Scan(&si.ID, &si.Objective, &si.Status, &si.CreatedAt, &si.UpdatedAt); err != nil {
 		return nil, err
@@ -190,7 +234,7 @@ func (s *DB) GetSession(ctx context.Context, id string) (*SessionInfo, error) {
 }
 
 func (s *DB) LatestSession(ctx context.Context) (*SessionInfo, error) {
-	row := s.db.QueryRowContext(ctx, `SELECT id, objective, status, created_at, updated_at FROM sessions ORDER BY created_at DESC LIMIT 1`)
+	row := s.reader.QueryRowContext(ctx, `SELECT id, objective, status, created_at, updated_at FROM sessions ORDER BY created_at DESC LIMIT 1`)
 	var si SessionInfo
 	if err := row.Scan(&si.ID, &si.Objective, &si.Status, &si.CreatedAt, &si.UpdatedAt); err != nil {
 		return nil, err
@@ -201,7 +245,7 @@ func (s *DB) LatestSession(ctx context.Context) (*SessionInfo, error) {
 // FindResumableSession returns the most recent session that is not 'done' and can be resumed.
 // It excludes sessions with status 'done' or 'cancelled'.
 func (s *DB) FindResumableSession(ctx context.Context) (*SessionInfo, error) {
-	row := s.db.QueryRowContext(ctx, `
+	row := s.reader.QueryRowContext(ctx, `
 		SELECT id, objective, status, created_at, updated_at
 		FROM sessions
 		WHERE status NOT IN ('done', 'cancelled')
@@ -216,7 +260,7 @@ func (s *DB) FindResumableSession(ctx context.Context) (*SessionInfo, error) {
 // UpdateSessionPhase saves the current phase and iteration for session resumption.
 func (s *DB) UpdateSessionPhase(ctx context.Context, sessionID string, phase string, iteration int) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.writer.ExecContext(ctx,
 		`UPDATE sessions SET phase = ?, iteration = ?, updated_at = ? WHERE id = ?`,
 		phase, iteration, now, sessionID,
 	)
@@ -227,7 +271,7 @@ func (s *DB) UpdateSessionPhase(ctx context.Context, sessionID string, phase str
 func (s *DB) GetSessionPhase(ctx context.Context, sessionID string) (string, int, error) {
 	var phase string
 	var iteration int
-	err := s.db.QueryRowContext(ctx,
+	err := s.reader.QueryRowContext(ctx,
 		`SELECT COALESCE(phase, 'plan'), COALESCE(iteration, 0) FROM sessions WHERE id = ?`,
 		sessionID,
 	).Scan(&phase, &iteration)
@@ -250,7 +294,7 @@ type EventRow struct {
 func (s *DB) ListEvents(ctx context.Context, sessionID string, limit int, afterID int64) ([]EventRow, error) {
 	query := `SELECT id, session_id, type, COALESCE(data, ''), created_at FROM events
 	          WHERE session_id = ? AND id > ? ORDER BY id ASC LIMIT ?`
-	rows, err := s.db.QueryContext(ctx, query, sessionID, afterID, limit)
+	rows, err := s.reader.QueryContext(ctx, query, sessionID, afterID, limit)
 	if err != nil {
 		return nil, err
 	}
@@ -276,7 +320,7 @@ func (s *DB) AppendEvent(ctx context.Context, sessionID, eventType string, data 
 		dataStr = string(b)
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	result, err := s.db.ExecContext(ctx,
+	result, err := s.writer.ExecContext(ctx,
 		`INSERT INTO events (session_id, type, data, created_at) VALUES (?, ?, ?, ?)`,
 		sessionID, eventType, dataStr, now,
 	)
@@ -288,7 +332,7 @@ func (s *DB) AppendEvent(ctx context.Context, sessionID, eventType string, data 
 
 func (s *DB) EventCount(ctx context.Context, sessionID string) (int, error) {
 	var count int
-	err := s.db.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE session_id = ?`, sessionID).Scan(&count)
+	err := s.reader.QueryRowContext(ctx, `SELECT COUNT(*) FROM events WHERE session_id = ?`, sessionID).Scan(&count)
 	return count, err
 }
 
@@ -318,7 +362,7 @@ type TaskRow struct {
 
 func (s *DB) InsertTask(ctx context.Context, sessionID string, t TaskRow) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.writer.ExecContext(ctx,
 		`INSERT OR REPLACE INTO tasks
 		(id, session_id, type, status, priority, title, description, constraints, allowed_paths, context, max_retries, retry_count, depends_on, timeout_ns, created_at, result_data)
 		VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
@@ -347,13 +391,13 @@ func (s *DB) UpdateTaskStatus(ctx context.Context, sessionID, taskID, status str
 		col = "completed_at"
 	}
 	if col != "" {
-		_, err := s.db.ExecContext(ctx,
+		_, err := s.writer.ExecContext(ctx,
 			fmt.Sprintf(`UPDATE tasks SET status = ?, %s = ? WHERE id = ? AND session_id = ?`, col),
 			status, now, taskID, sessionID,
 		)
 		return err
 	}
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.writer.ExecContext(ctx,
 		`UPDATE tasks SET status = ? WHERE id = ? AND session_id = ?`,
 		status, taskID, sessionID,
 	)
@@ -361,7 +405,7 @@ func (s *DB) UpdateTaskStatus(ctx context.Context, sessionID, taskID, status str
 }
 
 func (s *DB) UpdateTaskWorker(ctx context.Context, sessionID, taskID, workerID string) error {
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.writer.ExecContext(ctx,
 		`UPDATE tasks SET worker_id = ? WHERE id = ? AND session_id = ?`,
 		workerID, taskID, sessionID,
 	)
@@ -373,7 +417,7 @@ func (s *DB) UpdateTaskResult(ctx context.Context, sessionID, taskID string, res
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx,
+	_, err = s.writer.ExecContext(ctx,
 		`UPDATE tasks SET result = ?, result_data = ? WHERE id = ? AND session_id = ?`,
 		string(b), string(b), taskID, sessionID,
 	)
@@ -382,7 +426,7 @@ func (s *DB) UpdateTaskResult(ctx context.Context, sessionID, taskID string, res
 
 // UpdateTaskRetryCount sets the retry count for a task.
 func (s *DB) UpdateTaskRetryCount(ctx context.Context, sessionID, taskID string, retryCount int) error {
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.writer.ExecContext(ctx,
 		`UPDATE tasks SET retry_count = ? WHERE id = ? AND session_id = ?`,
 		retryCount, taskID, sessionID,
 	)
@@ -391,7 +435,7 @@ func (s *DB) UpdateTaskRetryCount(ctx context.Context, sessionID, taskID string,
 
 // UpdateTaskErrorType sets the last error type for a task.
 func (s *DB) UpdateTaskErrorType(ctx context.Context, sessionID, taskID, errorType string) error {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return fmt.Errorf("begin transaction: %w", err)
 	}
@@ -418,7 +462,7 @@ func (s *DB) UpdateTaskErrorType(ctx context.Context, sessionID, taskID, errorTy
 }
 
 func (s *DB) IncrementTaskRetry(ctx context.Context, sessionID, taskID string) (int, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
+	tx, err := s.writer.BeginTx(ctx, nil)
 	if err != nil {
 		return 0, fmt.Errorf("begin transaction: %w", err)
 	}
@@ -446,7 +490,7 @@ const taskSelectCols = `id, session_id, type, status, priority, title, descripti
 	created_at, started_at, completed_at, result_data`
 
 func (s *DB) GetTask(ctx context.Context, sessionID, taskID string) (*TaskRow, error) {
-	row := s.db.QueryRowContext(ctx,
+	row := s.reader.QueryRowContext(ctx,
 		`SELECT `+taskSelectCols+` FROM tasks WHERE id = ? AND session_id = ?`,
 		taskID, sessionID,
 	)
@@ -454,7 +498,7 @@ func (s *DB) GetTask(ctx context.Context, sessionID, taskID string) (*TaskRow, e
 }
 
 func (s *DB) GetTasks(ctx context.Context, sessionID string) ([]TaskRow, error) {
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.reader.QueryContext(ctx,
 		`SELECT `+taskSelectCols+` FROM tasks WHERE session_id = ? ORDER BY priority DESC, created_at`,
 		sessionID,
 	)
@@ -474,7 +518,7 @@ func (s *DB) GetTasks(ctx context.Context, sessionID string) ([]TaskRow, error) 
 }
 
 func (s *DB) GetTasksByStatus(ctx context.Context, sessionID, status string) ([]TaskRow, error) {
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.reader.QueryContext(ctx,
 		`SELECT `+taskSelectCols+` FROM tasks WHERE session_id = ? AND status = ? ORDER BY priority DESC`,
 		sessionID, status,
 	)
@@ -494,7 +538,7 @@ func (s *DB) GetTasksByStatus(ctx context.Context, sessionID, status string) ([]
 }
 
 func (s *DB) CountTasksByStatus(ctx context.Context, sessionID string) (map[string]int, error) {
-	rows, err := s.db.QueryContext(ctx,
+	rows, err := s.reader.QueryContext(ctx,
 		`SELECT status, COUNT(*) FROM tasks WHERE session_id = ? GROUP BY status`,
 		sessionID,
 	)
@@ -518,7 +562,7 @@ func (s *DB) CountTasksByStatus(ctx context.Context, sessionID string) (map[stri
 
 func (s *DB) PostBlackboard(ctx context.Context, sessionID, key, value, postedBy, taskID, tags string) error {
 	now := time.Now().UTC().Format(time.RFC3339Nano)
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.writer.ExecContext(ctx,
 		`INSERT OR REPLACE INTO blackboard (key, session_id, value, posted_by, task_id, tags, created_at)
 		 VALUES (?, ?, ?, ?, ?, ?, ?)`,
 		key, sessionID, value, postedBy, taskID, tags, now,
@@ -528,7 +572,7 @@ func (s *DB) PostBlackboard(ctx context.Context, sessionID, key, value, postedBy
 
 func (s *DB) ReadBlackboard(ctx context.Context, sessionID, key string) (string, error) {
 	var value string
-	err := s.db.QueryRowContext(ctx,
+	err := s.reader.QueryRowContext(ctx,
 		`SELECT value FROM blackboard WHERE key = ? AND session_id = ?`,
 		key, sessionID,
 	).Scan(&value)
@@ -538,20 +582,76 @@ func (s *DB) ReadBlackboard(ctx context.Context, sessionID, key string) (string,
 // --- KV (general purpose) ---
 
 func (s *DB) SetKV(ctx context.Context, key, value string) error {
-	_, err := s.db.ExecContext(ctx, `INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)`, key, value)
+	_, err := s.writer.ExecContext(ctx, `INSERT OR REPLACE INTO kv (key, value) VALUES (?, ?)`, key, value)
 	return err
 }
 
 func (s *DB) GetKV(ctx context.Context, key string) (string, error) {
 	var value string
-	err := s.db.QueryRowContext(ctx, `SELECT value FROM kv WHERE key = ?`, key).Scan(&value)
+	err := s.reader.QueryRowContext(ctx, `SELECT value FROM kv WHERE key = ?`, key).Scan(&value)
 	return value, err
+}
+
+// --- Message operations ---
+
+// MessageRow represents a stored message.
+type MessageRow struct {
+	SequenceID int
+	Role       string
+	Content    string
+	UsageData  string
+}
+
+// AppendMessage appends a message to a session's conversation history.
+func (s *DB) AppendMessage(ctx context.Context, sessionID string, sequenceID int, role string, content string, usageData string) error {
+	_, err := s.writer.ExecContext(ctx, `
+		INSERT OR REPLACE INTO messages (session_id, sequence_id, role, content, usage_data, created_at)
+		VALUES (?, ?, ?, ?, ?, ?)`,
+		sessionID, sequenceID, role, content, usageData, time.Now().Format(time.RFC3339))
+	return err
+}
+
+// LoadMessages loads all non-excluded messages for a session, ordered by sequence_id.
+func (s *DB) LoadMessages(ctx context.Context, sessionID string) ([]MessageRow, error) {
+	rows, err := s.reader.QueryContext(ctx, `
+		SELECT sequence_id, role, content, usage_data
+		FROM messages WHERE session_id = ? AND excluded = 0
+		ORDER BY sequence_id`, sessionID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var msgs []MessageRow
+	for rows.Next() {
+		var m MessageRow
+		var usageData sql.NullString
+		if err := rows.Scan(&m.SequenceID, &m.Role, &m.Content, &usageData); err != nil {
+			return nil, err
+		}
+		m.UsageData = usageData.String
+		msgs = append(msgs, m)
+	}
+	return msgs, rows.Err()
+}
+
+// MarkMessageExcluded marks a message as excluded from conversation loading.
+func (s *DB) MarkMessageExcluded(ctx context.Context, sessionID string, sequenceID int) error {
+	_, err := s.writer.ExecContext(ctx, `
+		UPDATE messages SET excluded = 1 WHERE session_id = ? AND sequence_id = ?`,
+		sessionID, sequenceID)
+	return err
 }
 
 // --- Lifecycle ---
 
 func (s *DB) Close() error {
-	return s.db.Close()
+	rErr := s.reader.Close()
+	wErr := s.writer.Close()
+	if wErr != nil {
+		return wErr
+	}
+	return rErr
 }
 
 // --- scan helpers ---
@@ -599,7 +699,7 @@ type SessionSummary struct {
 
 // ListSessions returns session summaries with task counts, ordered by most recent first.
 func (s *DB) ListSessions(ctx context.Context, limit int) ([]SessionSummary, error) {
-	rows, err := s.db.QueryContext(ctx, `
+	rows, err := s.reader.QueryContext(ctx, `
 		SELECT s.id, s.objective, s.status, s.created_at, s.updated_at,
 			COUNT(t.id) AS total_tasks,
 			COALESCE(SUM(CASE WHEN t.status = 'complete' THEN 1 ELSE 0 END), 0) AS completed,
@@ -630,7 +730,7 @@ func (s *DB) ListSessions(ctx context.Context, limit int) ([]SessionSummary, err
 // ResetRunningTasks marks all 'running' tasks as 'pending' for session resumption.
 // This should be called when resuming a session to retry tasks that were interrupted.
 func (s *DB) ResetRunningTasks(ctx context.Context, sessionID string) error {
-	_, err := s.db.ExecContext(ctx,
+	_, err := s.writer.ExecContext(ctx,
 		`UPDATE tasks SET status = 'pending', worker_id = NULL, started_at = NULL WHERE session_id = ? AND status = 'running'`,
 		sessionID,
 	)

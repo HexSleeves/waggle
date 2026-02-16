@@ -94,6 +94,9 @@ func (c *AnthropicClient) ChatWithTools(ctx context.Context, systemPrompt string
 		if td.Description != "" {
 			t.OfTool.Description = param.NewOpt(td.Description)
 		}
+		if td.Cache {
+			t.OfTool.CacheControl = anthropic.NewCacheControlEphemeralParam()
+		}
 		apiTools[i] = t
 	}
 
@@ -142,7 +145,9 @@ func (c *AnthropicClient) ChatWithTools(ctx context.Context, systemPrompt string
 		Tools:     apiTools,
 	}
 	if systemPrompt != "" {
-		params.System = []anthropic.TextBlockParam{{Text: systemPrompt}}
+		sysBlocks := []anthropic.TextBlockParam{{Text: systemPrompt}}
+		sysBlocks[len(sysBlocks)-1].CacheControl = anthropic.NewCacheControlEphemeralParam()
+		params.System = sysBlocks
 	}
 
 	resp, err := c.client.Messages.New(ctx, params)
@@ -153,6 +158,13 @@ func (c *AnthropicClient) ChatWithTools(ctx context.Context, systemPrompt string
 	// Parse response into our Response type.
 	result := &Response{
 		StopReason: string(resp.StopReason),
+		Model:      string(resp.Model),
+		Usage: Usage{
+			InputTokens:         int(resp.Usage.InputTokens),
+			OutputTokens:        int(resp.Usage.OutputTokens),
+			CacheCreationTokens: int(resp.Usage.CacheCreationInputTokens),
+			CacheReadTokens:     int(resp.Usage.CacheReadInputTokens),
+		},
 	}
 	for _, block := range resp.Content {
 		switch block.Type {

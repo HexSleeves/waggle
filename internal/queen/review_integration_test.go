@@ -114,7 +114,7 @@ func TestApproveTask_EmptyFeedback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(result, "approved") {
+	if !strings.Contains(result.LLMContent, "approved") {
 		t.Errorf("expected 'approved' in result: %s", result)
 	}
 }
@@ -129,7 +129,7 @@ func TestApproveTask_WithoutFeedback(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(result, "approved") {
+	if !strings.Contains(result.LLMContent, "approved") {
 		t.Errorf("expected 'approved' in result: %s", result)
 	}
 
@@ -545,7 +545,7 @@ func TestIntegration_ReviewAndApprove(t *testing.T) {
 	if err != nil {
 		t.Fatalf("approve error: %v", err)
 	}
-	if !strings.Contains(result, "approved") {
+	if !strings.Contains(result.LLMContent, "approved") {
 		t.Errorf("unexpected result: %s", result)
 	}
 
@@ -591,7 +591,7 @@ func TestIntegration_ReviewAndReject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reject error: %v", err)
 	}
-	if !strings.Contains(result, "rejected") {
+	if !strings.Contains(result.LLMContent, "rejected") {
 		t.Errorf("unexpected result: %s", result)
 	}
 

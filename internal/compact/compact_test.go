@@ -1,6 +1,7 @@
 package compact
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -282,5 +283,69 @@ func TestDefaultSummarizerTruncatesLongContent(t *testing.T) {
 	truncated := strings.Repeat("x", 200) + "..."
 	if !strings.Contains(summary, truncated) {
 		t.Error("summary should contain exactly 200-char truncated preview")
+	}
+}
+
+func TestLLMSummarizer_Success(t *testing.T) {
+	mockChat := func(ctx context.Context, systemPrompt, message string) (string, error) {
+		return "LLM summary: discussed project setup and testing.", nil
+	}
+
+	summarizer := LLMSummarizer(mockChat)
+	messages := []Message{
+		{Role: "user", Content: "Hello"},
+		{Role: "assistant", Content: "Hi there"},
+		{Role: "user", Content: "Create a plan"},
+	}
+
+	summary, err := summarizer(messages)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if summary != "LLM summary: discussed project setup and testing." {
+		t.Errorf("unexpected summary: %s", summary)
+	}
+}
+
+func TestLLMSummarizer_Fallback(t *testing.T) {
+	mockChat := func(ctx context.Context, systemPrompt, message string) (string, error) {
+		return "", errors.New("LLM unavailable")
+	}
+
+	summarizer := LLMSummarizer(mockChat)
+	messages := []Message{
+		{Role: "user", Content: "Hello"},
+		{Role: "assistant", Content: "Hi there"},
+	}
+
+	summary, err := summarizer(messages)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Should fall back to DefaultSummarizer output
+	if !strings.Contains(summary, "Summary of 2 messages") {
+		t.Errorf("expected DefaultSummarizer fallback, got: %s", summary)
+	}
+}
+
+func TestLLMSummarizer_TruncatesLong(t *testing.T) {
+	mockChat := func(ctx context.Context, systemPrompt, message string) (string, error) {
+		return strings.Repeat("x", 10000), nil
+	}
+
+	summarizer := LLMSummarizer(mockChat)
+	messages := []Message{
+		{Role: "user", Content: "Hello"},
+	}
+
+	summary, err := summarizer(messages)
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(summary) > 8100 {
+		t.Errorf("summary should be capped, got length %d", len(summary))
+	}
+	if !strings.Contains(summary, "[summary truncated]") {
+		t.Error("expected truncation marker")
 	}
 }

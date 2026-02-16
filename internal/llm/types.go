@@ -7,6 +7,7 @@ type ToolDef struct {
 	Name        string                 `json:"name"`
 	Description string                 `json:"description"`
 	InputSchema map[string]interface{} `json:"input_schema"`
+	Cache       bool                   `json:"cache,omitempty"`
 }
 
 // ToolCall represents the LLM requesting a tool invocation.
@@ -28,12 +29,23 @@ type ContentBlock struct {
 	Type     string    `json:"type"` // "text" or "tool_use"
 	Text     string    `json:"text,omitempty"`
 	ToolCall *ToolCall `json:"tool_call,omitempty"`
+	Cache    bool      `json:"cache,omitempty"`
+}
+
+// Usage tracks token consumption for an LLM call.
+type Usage struct {
+	InputTokens         int `json:"input_tokens"`
+	OutputTokens        int `json:"output_tokens"`
+	CacheCreationTokens int `json:"cache_creation_tokens,omitempty"`
+	CacheReadTokens     int `json:"cache_read_tokens,omitempty"`
 }
 
 // Response is the LLM's response, possibly containing tool calls.
 type Response struct {
 	Content    []ContentBlock `json:"content"`
 	StopReason string         `json:"stop_reason"` // "end_turn", "tool_use", "max_tokens"
+	Usage      Usage          `json:"usage"`
+	Model      string         `json:"model,omitempty"`
 }
 
 // ToolMessage is a rich message that can contain text, tool calls, or tool results.

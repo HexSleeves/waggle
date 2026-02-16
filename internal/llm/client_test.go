@@ -88,3 +88,58 @@ func TestInterfaceCompliance(t *testing.T) {
 	// Verify AnthropicClient satisfies ToolClient
 	var _ ToolClient = (*AnthropicClient)(nil)
 }
+
+func TestUsageInResponse(t *testing.T) {
+	// Verify Usage struct is populated correctly in a Response
+	resp := &Response{
+		Content:    []ContentBlock{{Type: "text", Text: "hello"}},
+		StopReason: "end_turn",
+		Model:      "test-model",
+		Usage: Usage{
+			InputTokens:         1000,
+			OutputTokens:        200,
+			CacheCreationTokens: 500,
+			CacheReadTokens:     800,
+		},
+	}
+
+	if resp.Usage.InputTokens != 1000 {
+		t.Errorf("expected InputTokens=1000, got %d", resp.Usage.InputTokens)
+	}
+	if resp.Usage.OutputTokens != 200 {
+		t.Errorf("expected OutputTokens=200, got %d", resp.Usage.OutputTokens)
+	}
+	if resp.Usage.CacheCreationTokens != 500 {
+		t.Errorf("expected CacheCreationTokens=500, got %d", resp.Usage.CacheCreationTokens)
+	}
+	if resp.Usage.CacheReadTokens != 800 {
+		t.Errorf("expected CacheReadTokens=800, got %d", resp.Usage.CacheReadTokens)
+	}
+	if resp.Model != "test-model" {
+		t.Errorf("expected Model=test-model, got %q", resp.Model)
+	}
+}
+
+func TestUsageZeroValue(t *testing.T) {
+	// Zero-value Usage should have all fields at 0
+	var u Usage
+	if u.InputTokens != 0 || u.OutputTokens != 0 || u.CacheCreationTokens != 0 || u.CacheReadTokens != 0 {
+		t.Error("zero-value Usage should have all fields at 0")
+	}
+}
+
+func TestContentBlockCacheField(t *testing.T) {
+	// Verify Cache field on ContentBlock
+	cb := ContentBlock{Type: "text", Text: "hello", Cache: true}
+	if !cb.Cache {
+		t.Error("expected Cache=true")
+	}
+}
+
+func TestToolDefCacheField(t *testing.T) {
+	// Verify Cache field on ToolDef
+	td := ToolDef{Name: "test", Cache: true}
+	if !td.Cache {
+		t.Error("expected Cache=true")
+	}
+}

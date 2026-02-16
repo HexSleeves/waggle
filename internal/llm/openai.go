@@ -63,6 +63,14 @@ type openaiCallFunction struct {
 type openaiResponse struct {
 	Choices []openaiChoice `json:"choices"`
 	Error   *openaiError   `json:"error,omitempty"`
+	Usage   *openaiUsage   `json:"usage,omitempty"`
+	Model   string         `json:"model,omitempty"`
+}
+
+type openaiUsage struct {
+	PromptTokens     int `json:"prompt_tokens"`
+	CompletionTokens int `json:"completion_tokens"`
+	TotalTokens      int `json:"total_tokens"`
 }
 
 type openaiChoice struct {
@@ -236,6 +244,13 @@ func (c *OpenAIClient) ChatWithTools(ctx context.Context, systemPrompt string,
 	}
 
 	result := &Response{StopReason: stopReason}
+	result.Model = resp.Model
+	if resp.Usage != nil {
+		result.Usage = Usage{
+			InputTokens:  resp.Usage.PromptTokens,
+			OutputTokens: resp.Usage.CompletionTokens,
+		}
+	}
 
 	// Extract text content
 	if choice.Message.Content != nil {

@@ -1,6 +1,7 @@
 package compact
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"sync"
@@ -143,4 +144,34 @@ func DefaultSummarizer(messages []Message) (string, error) {
 		b.WriteString(fmt.Sprintf("- [%s] %s\n", m.Role, preview))
 	}
 	return b.String(), nil
+}
+
+// LLMSummarizer returns a summarizer function that uses an LLM to create concise summaries.
+// Falls back to DefaultSummarizer if the LLM call fails.
+func LLMSummarizer(chatFn func(ctx context.Context, systemPrompt, message string) (string, error)) func(messages []Message) (string, error) {
+	return func(messages []Message) (string, error) {
+		// Build a prompt from the messages
+		var b strings.Builder
+		for _, m := range messages {
+			preview := m.Content
+			if len(preview) > 500 {
+				preview = preview[:500] + "..."
+			}
+			b.WriteString(fmt.Sprintf("[%s]: %s\n", m.Role, preview))
+		}
+
+		summary, err := chatFn(context.Background(),
+			"Summarize this conversation segment concisely. Focus on key decisions, tool calls, and outcomes. Keep under 500 words.",
+			b.String())
+		if err != nil {
+			// Fallback to default
+			return DefaultSummarizer(messages)
+		}
+
+		// Ensure summary isn't too long (cap at ~2000 tokens ≈ 8000 chars)
+		if len(summary) > 8000 {
+			summary = summary[:8000] + "\n[summary truncated]"
+		}
+		return summary, nil
+	}
 }

@@ -16,8 +16,41 @@ import (
 	"github.com/exedev/waggle/internal/worker"
 )
 
-// ToolHandler executes a tool call and returns the result string.
-type ToolHandler func(ctx context.Context, q *Queen, input json.RawMessage) (string, error)
+const maxOutputLen = 8 * 1024 // 8KB threshold
+
+func truncateLargeOutput(output string, taskID string, hiveDir string) string {
+	if len(output) <= maxOutputLen {
+		return output
+	}
+
+	// Save full output to file
+	outputDir := filepath.Join(hiveDir, "outputs")
+	os.MkdirAll(outputDir, 0755)
+	outputPath := filepath.Join(outputDir, taskID+".log")
+	os.WriteFile(outputPath, []byte(output), 0644)
+
+	head := output[:3*1024]
+	tail := output[len(output)-3*1024:]
+	return fmt.Sprintf("%s\n\n[...truncated, %d bytes total. Full output saved to .hive/outputs/%s.log \u2014 use read_file to inspect specific sections...]\n\n%s",
+		head, len(output), taskID, tail)
+}
+
+// ToolOutput separates LLM-facing content from TUI-facing display.
+type ToolOutput struct {
+	LLMContent string // Sent to the LLM as tool_result content
+	Display    string // Shown in TUI (optional, falls back to LLMContent)
+}
+
+// DisplayContent returns Display if set, otherwise LLMContent.
+func (o ToolOutput) DisplayContent() string {
+	if o.Display != "" {
+		return o.Display
+	}
+	return o.LLMContent
+}
+
+// ToolHandler executes a tool call and returns the result.
+type ToolHandler func(ctx context.Context, q *Queen, input json.RawMessage) (ToolOutput, error)
 
 // toolHandlers maps tool names to their handler functions.
 var toolHandlers = map[string]ToolHandler{
@@ -35,10 +68,10 @@ var toolHandlers = map[string]ToolHandler{
 }
 
 // executeTool runs a tool call and returns the result.
-func (q *Queen) executeTool(ctx context.Context, tc *llm.ToolCall) (string, error) {
+func (q *Queen) executeTool(ctx context.Context, tc *llm.ToolCall) (ToolOutput, error) {
 	handler, ok := toolHandlers[tc.Name]
 	if !ok {
-		return "", fmt.Errorf("unknown tool: %s", tc.Name)
+		return ToolOutput{}, fmt.Errorf("unknown tool: %s", tc.Name)
 	}
 	return handler(ctx, q, tc.Input)
 }
@@ -206,32 +239,32 @@ type createTaskEntry struct {
 	MaxRetries   int      `json:"max_retries"`
 }
 
-func handleCreateTasks(ctx context.Context, q *Queen, input json.RawMessage) (string, error) {
+func handleCreateTasks(ctx context.Context, q *Queen, input json.RawMessage) (ToolOutput, error) {
 	var in createTasksInput
 	if err := json.Unmarshal(input, &in); err != nil {
-		return "", fmt.Errorf("invalid input: %w", err)
+		return ToolOutput{}, fmt.Errorf("invalid input: %w", err)
 	}
 	if len(in.Tasks) == 0 {
-		return "", fmt.Errorf("tasks array is required and must not be empty")
+		return ToolOutput{}, fmt.Errorf("tasks array is required and must not be empty")
 	}
 
 	// Validate each task entry
 	for i, te := range in.Tasks {
 		if te.ID == "" {
-			return "", fmt.Errorf("task[%d]: id is required", i)
+			return ToolOutput{}, fmt.Errorf("task[%d]: id is required", i)
 		}
 		if te.Title == "" {
-			return "", fmt.Errorf("task[%d]: title is required", i)
+			return ToolOutput{}, fmt.Errorf("task[%d]: title is required", i)
 		}
 		if te.Description == "" {
-			return "", fmt.Errorf("task[%d]: description is required", i)
+			return ToolOutput{}, fmt.Errorf("task[%d]: description is required", i)
 		}
 		if te.Type == "" {
-			return "", fmt.Errorf("task[%d]: type is required", i)
+			return ToolOutput{}, fmt.Errorf("task[%d]: type is required", i)
 		}
 		// Check for duplicate IDs with existing tasks
 		if _, exists := q.tasks.Get(te.ID); exists {
-			return "", fmt.Errorf("task[%d]: id %q already exists in task graph", i, te.ID)
+			return ToolOutput{}, fmt.Errorf("task[%d]: id %q already exists in task graph", i, te.ID)
 		}
 	}
 
@@ -270,7 +303,7 @@ func handleCreateTasks(ctx context.Context, q *Queen, input json.RawMessage) (st
 		for _, t := range created {
 			q.tasks.Remove(t.ID)
 		}
-		return "", fmt.Errorf("cycle detected, tasks rolled back: %w", err)
+		return ToolOutput{}, fmt.Errorf("cycle detected, tasks rolled back: %w", err)
 	}
 
 	// Persist to DB (tasks already added to graph above for cycle detection)
@@ -286,7 +319,15 @@ func handleCreateTasks(ctx context.Context, q *Queen, input json.RawMessage) (st
 	for _, t := range created {
 		fmt.Fprintf(&b, "  - [%s] %s (id=%s, priority=%d)\n", t.Type, t.Title, t.ID, t.Priority)
 	}
-	return b.String(), nil
+
+	// Display: compact summary
+	var ids []string
+	for _, t := range created {
+		ids = append(ids, t.ID)
+	}
+	display := fmt.Sprintf("Created %d task(s): %s", len(created), strings.Join(ids, ", "))
+
+	return ToolOutput{LLMContent: b.String(), Display: display}, nil
 }
 
 // ---------- assign_task ----------
@@ -295,39 +336,39 @@ type assignTaskInput struct {
 	TaskID string `json:"task_id"`
 }
 
-func handleAssignTask(ctx context.Context, q *Queen, input json.RawMessage) (string, error) {
+func handleAssignTask(ctx context.Context, q *Queen, input json.RawMessage) (ToolOutput, error) {
 	var in assignTaskInput
 	if err := json.Unmarshal(input, &in); err != nil {
-		return "", fmt.Errorf("invalid input: %w", err)
+		return ToolOutput{}, fmt.Errorf("invalid input: %w", err)
 	}
 	if in.TaskID == "" {
-		return "", fmt.Errorf("task_id is required")
+		return ToolOutput{}, fmt.Errorf("task_id is required")
 	}
 
 	t, ok := q.tasks.Get(in.TaskID)
 	if !ok {
-		return "", fmt.Errorf("task %q not found", in.TaskID)
+		return ToolOutput{}, fmt.Errorf("task %q not found", in.TaskID)
 	}
 	if t.GetStatus() != task.StatusPending {
-		return "", fmt.Errorf("task %q is not pending (current status: %s)", in.TaskID, t.GetStatus())
+		return ToolOutput{}, fmt.Errorf("task %q is not pending (current status: %s)", in.TaskID, t.GetStatus())
 	}
 
 	// Check dependencies are met
 	for _, depID := range t.DependsOn {
 		dep, depOK := q.tasks.Get(depID)
 		if !depOK || dep.Status != task.StatusComplete {
-			return "", fmt.Errorf("task %q has unmet dependency: %s", in.TaskID, depID)
+			return ToolOutput{}, fmt.Errorf("task %q has unmet dependency: %s", in.TaskID, depID)
 		}
 	}
 
 	// Check pool capacity
 	if q.pool.ActiveCount() >= q.cfg.Workers.MaxParallel {
-		return "", fmt.Errorf("max parallel workers (%d) reached, wait for a worker to finish", q.cfg.Workers.MaxParallel)
+		return ToolOutput{}, fmt.Errorf("max parallel workers (%d) reached, wait for a worker to finish", q.cfg.Workers.MaxParallel)
 	}
 
 	adapterName := q.router.Route(t)
 	if adapterName == "" {
-		return "", fmt.Errorf("no adapter available for task type %s", t.Type)
+		return ToolOutput{}, fmt.Errorf("no adapter available for task type %s", t.Type)
 	}
 
 	// Inject default scope constraints (shared with delegate())
@@ -335,7 +376,7 @@ func handleAssignTask(ctx context.Context, q *Queen, input json.RawMessage) (str
 
 	bee, err := q.pool.Spawn(ctx, t, adapterName)
 	if err != nil {
-		return "", fmt.Errorf("spawn worker: %w", err)
+		return ToolOutput{}, fmt.Errorf("spawn worker: %w", err)
 	}
 
 	q.mu.Lock()
@@ -354,12 +395,14 @@ func handleAssignTask(ctx context.Context, q *Queen, input json.RawMessage) (str
 		q.logger.Printf("⚠ Warning: failed to update task worker: %v", err)
 	}
 
-	return fmt.Sprintf("Task %q assigned to worker %s (adapter: %s)", t.ID, bee.ID(), adapterName), nil
+	llmContent := fmt.Sprintf("Task %q assigned to worker %s (adapter: %s)", t.ID, bee.ID(), adapterName)
+	display := fmt.Sprintf("Assigned: %s → %s", t.Title, bee.ID())
+	return ToolOutput{LLMContent: llmContent, Display: display}, nil
 }
 
 // ---------- get_status ----------
 
-func handleGetStatus(ctx context.Context, q *Queen, input json.RawMessage) (string, error) {
+func handleGetStatus(ctx context.Context, q *Queen, input json.RawMessage) (ToolOutput, error) {
 	allTasks := q.tasks.All()
 
 	type taskInfo struct {
@@ -394,7 +437,17 @@ func handleGetStatus(ctx context.Context, q *Queen, input json.RawMessage) (stri
 	}
 
 	b, _ := json.MarshalIndent(result, "", "  ")
-	return string(b), nil
+
+	// Display: compact summary
+	var display strings.Builder
+	fmt.Fprintf(&display, "Phase: %s | Workers: %d | ", q.phase, q.pool.ActiveCount())
+	var parts []string
+	for status, count := range counts {
+		parts = append(parts, fmt.Sprintf("%s:%d", status, count))
+	}
+	display.WriteString(strings.Join(parts, " "))
+
+	return ToolOutput{LLMContent: string(b), Display: display.String()}, nil
 }
 
 // ---------- get_task_output ----------
@@ -403,23 +456,23 @@ type getTaskOutputInput struct {
 	TaskID string `json:"task_id"`
 }
 
-func handleGetTaskOutput(ctx context.Context, q *Queen, input json.RawMessage) (string, error) {
+func handleGetTaskOutput(ctx context.Context, q *Queen, input json.RawMessage) (ToolOutput, error) {
 	var in getTaskOutputInput
 	if err := json.Unmarshal(input, &in); err != nil {
-		return "", fmt.Errorf("invalid input: %w", err)
+		return ToolOutput{}, fmt.Errorf("invalid input: %w", err)
 	}
 	if in.TaskID == "" {
-		return "", fmt.Errorf("task_id is required")
+		return ToolOutput{}, fmt.Errorf("task_id is required")
 	}
 
 	t, ok := q.tasks.Get(in.TaskID)
 	if !ok {
-		return "", fmt.Errorf("task %q not found", in.TaskID)
+		return ToolOutput{}, fmt.Errorf("task %q not found", in.TaskID)
 	}
 
 	status := t.GetStatus()
 	if status != task.StatusComplete && status != task.StatusFailed {
-		return fmt.Sprintf("Task %q is still %s — no output yet.", in.TaskID, status), nil
+		return ToolOutput{LLMContent: fmt.Sprintf("Task %q is still %s — no output yet.", in.TaskID, status)}, nil
 	}
 
 	result := t.GetResult()
@@ -435,18 +488,20 @@ func handleGetTaskOutput(ctx context.Context, q *Queen, input json.RawMessage) (
 				fmt.Fprintf(&b, "  - %s\n", e)
 			}
 		}
-		return b.String(), nil
+		output := b.String()
+		output = truncateLargeOutput(output, in.TaskID, q.cfg.HivePath())
+		return ToolOutput{LLMContent: output}, nil
 	}
 
 	// Fallback: check blackboard
 	key := fmt.Sprintf("result-%s", in.TaskID)
 	if entry, found := q.board.Read(key); found {
 		if s, ok := entry.Value.(string); ok {
-			return fmt.Sprintf("Task: %s (%s)\nStatus: %s\nOutput:\n%s", t.Title, t.ID, status, s), nil
+			return ToolOutput{LLMContent: fmt.Sprintf("Task: %s (%s)\nStatus: %s\nOutput:\n%s", t.Title, t.ID, status, s)}, nil
 		}
 	}
 
-	return fmt.Sprintf("Task %q (%s) has no output available.", in.TaskID, status), nil
+	return ToolOutput{LLMContent: fmt.Sprintf("Task %q (%s) has no output available.", in.TaskID, status)}, nil
 }
 
 // ---------- approve_task ----------
@@ -456,18 +511,18 @@ type approveTaskInput struct {
 	Feedback string `json:"feedback"`
 }
 
-func handleApproveTask(ctx context.Context, q *Queen, input json.RawMessage) (string, error) {
+func handleApproveTask(ctx context.Context, q *Queen, input json.RawMessage) (ToolOutput, error) {
 	var in approveTaskInput
 	if err := json.Unmarshal(input, &in); err != nil {
-		return "", fmt.Errorf("invalid input: %w", err)
+		return ToolOutput{}, fmt.Errorf("invalid input: %w", err)
 	}
 	if in.TaskID == "" {
-		return "", fmt.Errorf("task_id is required")
+		return ToolOutput{}, fmt.Errorf("task_id is required")
 	}
 
 	t, ok := q.tasks.Get(in.TaskID)
 	if !ok {
-		return "", fmt.Errorf("task %q not found", in.TaskID)
+		return ToolOutput{}, fmt.Errorf("task %q not found", in.TaskID)
 	}
 
 	if in.Feedback != "" {
@@ -480,7 +535,7 @@ func handleApproveTask(ctx context.Context, q *Queen, input json.RawMessage) (st
 		})
 	}
 
-	return fmt.Sprintf("Task %q (%s) approved. Status: %s", in.TaskID, t.Title, t.GetStatus()), nil
+	return ToolOutput{LLMContent: fmt.Sprintf("Task %q (%s) approved. Status: %s", in.TaskID, t.Title, t.GetStatus())}, nil
 }
 
 // ---------- reject_task ----------
@@ -490,26 +545,26 @@ type rejectTaskInput struct {
 	Feedback string `json:"feedback"`
 }
 
-func handleRejectTask(ctx context.Context, q *Queen, input json.RawMessage) (string, error) {
+func handleRejectTask(ctx context.Context, q *Queen, input json.RawMessage) (ToolOutput, error) {
 	var in rejectTaskInput
 	if err := json.Unmarshal(input, &in); err != nil {
-		return "", fmt.Errorf("invalid input: %w", err)
+		return ToolOutput{}, fmt.Errorf("invalid input: %w", err)
 	}
 	if in.TaskID == "" {
-		return "", fmt.Errorf("task_id is required")
+		return ToolOutput{}, fmt.Errorf("task_id is required")
 	}
 	if in.Feedback == "" {
-		return "", fmt.Errorf("feedback is required when rejecting a task")
+		return ToolOutput{}, fmt.Errorf("feedback is required when rejecting a task")
 	}
 
 	t, ok := q.tasks.Get(in.TaskID)
 	if !ok {
-		return "", fmt.Errorf("task %q not found", in.TaskID)
+		return ToolOutput{}, fmt.Errorf("task %q not found", in.TaskID)
 	}
 
 	retryCount := t.GetRetryCount()
 	if retryCount >= t.MaxRetries {
-		return "", fmt.Errorf("task %q has exhausted all retries (%d/%d)", in.TaskID, retryCount, t.MaxRetries)
+		return ToolOutput{}, fmt.Errorf("task %q has exhausted all retries (%d/%d)", in.TaskID, retryCount, t.MaxRetries)
 	}
 
 	newCount := t.IncrRetryCount()
@@ -534,8 +589,8 @@ func handleRejectTask(ctx context.Context, q *Queen, input json.RawMessage) (str
 		Tags:     []string{"rejection", "feedback"},
 	})
 
-	return fmt.Sprintf("Task %q rejected and re-queued (attempt %d/%d). Feedback appended to description.",
-		in.TaskID, newCount, t.MaxRetries), nil
+	return ToolOutput{LLMContent: fmt.Sprintf("Task %q rejected and re-queued (attempt %d/%d). Feedback appended to description.",
+		in.TaskID, newCount, t.MaxRetries)}, nil
 }
 
 // ---------- wait_for_workers ----------
@@ -544,11 +599,11 @@ type waitForWorkersInput struct {
 	TimeoutSeconds int `json:"timeout_seconds"`
 }
 
-func handleWaitForWorkers(ctx context.Context, q *Queen, input json.RawMessage) (string, error) {
+func handleWaitForWorkers(ctx context.Context, q *Queen, input json.RawMessage) (ToolOutput, error) {
 	var in waitForWorkersInput
 	if len(input) > 0 {
 		if err := json.Unmarshal(input, &in); err != nil {
-			return "", fmt.Errorf("invalid input: %w", err)
+			return ToolOutput{}, fmt.Errorf("invalid input: %w", err)
 		}
 	}
 
@@ -556,6 +611,8 @@ func handleWaitForWorkers(ctx context.Context, q *Queen, input json.RawMessage) 
 	if timeoutSec <= 0 {
 		timeoutSec = 300
 	}
+
+	gitBefore := GetGitState(q.cfg.ProjectDir)
 
 	// Snapshot current running task statuses
 	runningBefore := map[string]task.Status{}
@@ -568,7 +625,7 @@ func handleWaitForWorkers(ctx context.Context, q *Queen, input json.RawMessage) 
 	q.mu.RUnlock()
 
 	if len(q.pool.Active()) == 0 {
-		return "No workers currently running.", nil
+		return ToolOutput{LLMContent: "No workers currently running."}, nil
 	}
 
 	timer := time.NewTimer(time.Duration(timeoutSec) * time.Second)
@@ -579,9 +636,9 @@ func handleWaitForWorkers(ctx context.Context, q *Queen, input json.RawMessage) 
 	for {
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
+			return ToolOutput{}, ctx.Err()
 		case <-timer.C:
-			return "Timeout reached. No workers completed during the wait period.", nil
+			return ToolOutput{LLMContent: "Timeout reached. No workers completed during the wait period."}, nil
 		case <-ticker.C:
 			// Check if any task changed status
 			var changed []string
@@ -602,13 +659,27 @@ func handleWaitForWorkers(ctx context.Context, q *Queen, input json.RawMessage) 
 					fmt.Fprintf(&b, "  - %s\n", c)
 				}
 				fmt.Fprintf(&b, "Active workers remaining: %d", q.pool.ActiveCount())
-				return b.String(), nil
+				gitAfter := GetGitState(q.cfg.ProjectDir)
+				if gitBefore != nil && gitAfter != nil {
+					if diff := gitBefore.Diff(gitAfter); diff != "" {
+						fmt.Fprintf(&b, "\n%s", diff)
+					}
+				}
+				return ToolOutput{LLMContent: b.String()}, nil
 			}
 
 			// Also check if active count decreased (worker finished but not in assignments)
 			if len(q.pool.Active()) == 0 {
 				q.processWorkerResults(ctx)
-				return "All workers have finished.", nil
+				var b strings.Builder
+				b.WriteString("All workers have finished.")
+				gitAfter := GetGitState(q.cfg.ProjectDir)
+				if gitBefore != nil && gitAfter != nil {
+					if diff := gitBefore.Diff(gitAfter); diff != "" {
+						fmt.Fprintf(&b, "\n%s", diff)
+					}
+				}
+				return ToolOutput{LLMContent: b.String()}, nil
 			}
 		}
 	}
@@ -679,18 +750,18 @@ type readFileInput struct {
 	LineEnd   int    `json:"line_end"`
 }
 
-func handleReadFile(ctx context.Context, q *Queen, input json.RawMessage) (string, error) {
+func handleReadFile(ctx context.Context, q *Queen, input json.RawMessage) (ToolOutput, error) {
 	var in readFileInput
 	if err := json.Unmarshal(input, &in); err != nil {
-		return "", fmt.Errorf("invalid input: %w", err)
+		return ToolOutput{}, fmt.Errorf("invalid input: %w", err)
 	}
 	if in.Path == "" {
-		return "", fmt.Errorf("path is required")
+		return ToolOutput{}, fmt.Errorf("path is required")
 	}
 
 	guard := q.guard
 	if err := guard.CheckPath(in.Path); err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 
 	fullPath := in.Path
@@ -699,12 +770,12 @@ func handleReadFile(ctx context.Context, q *Queen, input json.RawMessage) (strin
 	}
 
 	if err := guard.CheckFileSize(fullPath); err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 
 	f, err := os.Open(fullPath)
 	if err != nil {
-		return "", fmt.Errorf("open file: %w", err)
+		return ToolOutput{}, fmt.Errorf("open file: %w", err)
 	}
 	defer f.Close()
 
@@ -724,17 +795,17 @@ func handleReadFile(ctx context.Context, q *Queen, input json.RawMessage) (strin
 			lines = append(lines, fmt.Sprintf("%4d | %s", lineNum, scanner.Text()))
 		}
 		if err := scanner.Err(); err != nil {
-			return "", fmt.Errorf("read file: %w", err)
+			return ToolOutput{}, fmt.Errorf("read file: %w", err)
 		}
-		return strings.Join(lines, "\n"), nil
+		return ToolOutput{LLMContent: strings.Join(lines, "\n")}, nil
 	}
 
 	// Read entire file
 	data, err := os.ReadFile(fullPath)
 	if err != nil {
-		return "", fmt.Errorf("read file: %w", err)
+		return ToolOutput{}, fmt.Errorf("read file: %w", err)
 	}
-	return string(data), nil
+	return ToolOutput{LLMContent: string(data)}, nil
 }
 
 // ---------- list_files ----------
@@ -744,7 +815,7 @@ type listFilesInput struct {
 	Pattern string `json:"pattern"`
 }
 
-func handleListFiles(ctx context.Context, q *Queen, input json.RawMessage) (string, error) {
+func handleListFiles(ctx context.Context, q *Queen, input json.RawMessage) (ToolOutput, error) {
 	var in listFilesInput
 	_ = json.Unmarshal(input, &in) // all fields optional
 
@@ -755,7 +826,7 @@ func handleListFiles(ctx context.Context, q *Queen, input json.RawMessage) (stri
 
 	guard := q.guard
 	if err := guard.CheckPath(dir); err != nil {
-		return "", err
+		return ToolOutput{}, err
 	}
 
 	fullDir := dir
@@ -786,7 +857,7 @@ func handleListFiles(ctx context.Context, q *Queen, input json.RawMessage) (stri
 		// Simple directory listing
 		entries, readErr := os.ReadDir(fullDir)
 		if readErr != nil {
-			return "", fmt.Errorf("read directory: %w", readErr)
+			return ToolOutput{}, fmt.Errorf("read directory: %w", readErr)
 		}
 		for _, e := range entries {
 			name := e.Name()
@@ -797,13 +868,13 @@ func handleListFiles(ctx context.Context, q *Queen, input json.RawMessage) (stri
 		}
 	}
 	if walkErr != nil {
-		return "", fmt.Errorf("walk directory: %w", walkErr)
+		return ToolOutput{}, fmt.Errorf("walk directory: %w", walkErr)
 	}
 
 	if len(files) == 0 {
-		return "No files found.", nil
+		return ToolOutput{LLMContent: "No files found."}, nil
 	}
-	return strings.Join(files, "\n"), nil
+	return ToolOutput{LLMContent: strings.Join(files, "\n")}, nil
 }
 
 // ---------- complete ----------
@@ -812,13 +883,13 @@ type completeInput struct {
 	Summary string `json:"summary"`
 }
 
-func handleComplete(ctx context.Context, q *Queen, input json.RawMessage) (string, error) {
+func handleComplete(ctx context.Context, q *Queen, input json.RawMessage) (ToolOutput, error) {
 	var in completeInput
 	if err := json.Unmarshal(input, &in); err != nil {
-		return "", fmt.Errorf("invalid input: %w", err)
+		return ToolOutput{}, fmt.Errorf("invalid input: %w", err)
 	}
 	if in.Summary == "" {
-		return "", fmt.Errorf("summary is required")
+		return ToolOutput{}, fmt.Errorf("summary is required")
 	}
 
 	q.setPhase(PhaseDone)
@@ -826,7 +897,7 @@ func handleComplete(ctx context.Context, q *Queen, input json.RawMessage) (strin
 		q.logger.Printf("⚠ Warning: failed to update session status: %v", err)
 	}
 
-	return fmt.Sprintf("Objective marked as done. Summary: %s", in.Summary), nil
+	return ToolOutput{LLMContent: fmt.Sprintf("Objective marked as done. Summary: %s", in.Summary)}, nil
 }
 
 // ---------- fail ----------
@@ -835,13 +906,13 @@ type failInput struct {
 	Reason string `json:"reason"`
 }
 
-func handleFail(ctx context.Context, q *Queen, input json.RawMessage) (string, error) {
+func handleFail(ctx context.Context, q *Queen, input json.RawMessage) (ToolOutput, error) {
 	var in failInput
 	if err := json.Unmarshal(input, &in); err != nil {
-		return "", fmt.Errorf("invalid input: %w", err)
+		return ToolOutput{}, fmt.Errorf("invalid input: %w", err)
 	}
 	if in.Reason == "" {
-		return "", fmt.Errorf("reason is required")
+		return ToolOutput{}, fmt.Errorf("reason is required")
 	}
 
 	q.setPhase(PhaseFailed)
@@ -850,5 +921,5 @@ func handleFail(ctx context.Context, q *Queen, input json.RawMessage) (string, e
 	}
 	q.pool.KillAll()
 
-	return fmt.Sprintf("Objective marked as failed. Reason: %s", in.Reason), nil
+	return ToolOutput{LLMContent: fmt.Sprintf("Objective marked as failed. Reason: %s", in.Reason)}, nil
 }

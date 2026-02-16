@@ -152,8 +152,8 @@ func TestCreateTasksBasic(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(result, "Created 2 task(s)") {
-		t.Fatalf("unexpected result: %s", result)
+	if !strings.Contains(result.LLMContent, "Created 2 task(s)") {
+		t.Fatalf("unexpected result: %s", result.LLMContent)
 	}
 
 	// Verify tasks are in graph
@@ -297,10 +297,10 @@ func TestGetStatus(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(result, "t1") || !strings.Contains(result, "t2") {
+	if !strings.Contains(result.LLMContent, "t1") || !strings.Contains(result.LLMContent, "t2") {
 		t.Errorf("result should contain both task IDs: %s", result)
 	}
-	if !strings.Contains(result, "pending") || !strings.Contains(result, "complete") {
+	if !strings.Contains(result.LLMContent, "pending") || !strings.Contains(result.LLMContent, "complete") {
 		t.Errorf("result should contain status values: %s", result)
 	}
 }
@@ -318,7 +318,7 @@ func TestGetTaskOutputComplete(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(result, "all good") {
+	if !strings.Contains(result.LLMContent, "all good") {
 		t.Errorf("expected output in result: %s", result)
 	}
 }
@@ -331,7 +331,7 @@ func TestGetTaskOutputStillRunning(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(result, "still running") {
+	if !strings.Contains(result.LLMContent, "still running") {
 		t.Errorf("expected 'still running' in result: %s", result)
 	}
 }
@@ -357,7 +357,7 @@ func TestApproveTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(result, "approved") {
+	if !strings.Contains(result.LLMContent, "approved") {
 		t.Errorf("expected 'approved' in result: %s", result)
 	}
 
@@ -395,7 +395,7 @@ func TestRejectTask(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(result, "rejected") {
+	if !strings.Contains(result.LLMContent, "rejected") {
 		t.Errorf("expected 'rejected' in result: %s", result)
 	}
 
@@ -453,8 +453,8 @@ func TestReadFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if result != testContent {
-		t.Errorf("expected file content, got: %q", result)
+	if result.LLMContent != testContent {
+		t.Errorf("expected file content, got: %q", result.LLMContent)
 	}
 }
 
@@ -472,10 +472,10 @@ func TestReadFileLineRange(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(result, "line2") || !strings.Contains(result, "line4") {
+	if !strings.Contains(result.LLMContent, "line2") || !strings.Contains(result.LLMContent, "line4") {
 		t.Errorf("expected lines 2-4 in result: %s", result)
 	}
-	if strings.Contains(result, "line1") || strings.Contains(result, "line5") {
+	if strings.Contains(result.LLMContent, "line1") || strings.Contains(result.LLMContent, "line5") {
 		t.Errorf("should not contain line1 or line5: %s", result)
 	}
 }
@@ -508,7 +508,7 @@ func TestListFiles(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(result, "a.go") || !strings.Contains(result, "b.txt") {
+	if !strings.Contains(result.LLMContent, "a.go") || !strings.Contains(result.LLMContent, "b.txt") {
 		t.Errorf("expected files listed: %s", result)
 	}
 }
@@ -527,10 +527,10 @@ func TestListFilesWithPattern(t *testing.T) {
 	if err != nil {
 		t.Fatalf("unexpected error: %v", err)
 	}
-	if !strings.Contains(result, "a.go") {
+	if !strings.Contains(result.LLMContent, "a.go") {
 		t.Errorf("expected a.go in result: %s", result)
 	}
-	if strings.Contains(result, "b.txt") {
+	if strings.Contains(result.LLMContent, "b.txt") {
 		t.Errorf("should not contain b.txt: %s", result)
 	}
 }
@@ -547,7 +547,7 @@ func TestComplete(t *testing.T) {
 	if q.phase != PhaseDone {
 		t.Errorf("expected phase Done, got %s", q.phase)
 	}
-	if !strings.Contains(result, "All done") {
+	if !strings.Contains(result.LLMContent, "All done") {
 		t.Errorf("expected summary in result: %s", result)
 	}
 }
@@ -572,7 +572,7 @@ func TestFail(t *testing.T) {
 	if q.phase != PhaseFailed {
 		t.Errorf("expected phase Failed, got %s", q.phase)
 	}
-	if !strings.Contains(result, "Cannot proceed") {
+	if !strings.Contains(result.LLMContent, "Cannot proceed") {
 		t.Errorf("expected reason in result: %s", result)
 	}
 }
@@ -582,5 +582,90 @@ func TestFailMissingReason(t *testing.T) {
 	_, err := handleFail(context.Background(), q, toJSON(map[string]interface{}{}))
 	if err == nil || !strings.Contains(err.Error(), "reason is required") {
 		t.Fatalf("expected reason required error, got: %v", err)
+	}
+}
+
+func TestGetTaskOutput_SmallOutput(t *testing.T) {
+	q, _ := testQueen(t)
+	smallOutput := "small output here"
+	q.tasks.Add(&task.Task{
+		ID: "t1", Title: "Small", Type: task.TypeCode, Status: task.StatusComplete,
+		Result: &task.Result{Success: true, Output: smallOutput},
+	})
+
+	result, err := handleGetTaskOutput(context.Background(), q, toJSON(map[string]interface{}{"task_id": "t1"}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if !strings.Contains(result.LLMContent, smallOutput) {
+		t.Errorf("expected verbatim output, got: %s", result)
+	}
+	// Should NOT contain truncation marker
+	if strings.Contains(result.LLMContent, "truncated") {
+		t.Errorf("small output should not be truncated: %s", result)
+	}
+}
+
+func TestGetTaskOutput_LargeOutput(t *testing.T) {
+	q, _ := testQueen(t)
+	// Create output larger than 8KB
+	largeOutput := strings.Repeat("x", 20*1024)
+	q.tasks.Add(&task.Task{
+		ID: "t-big", Title: "Big", Type: task.TypeCode, Status: task.StatusComplete,
+		Result: &task.Result{Success: true, Output: largeOutput},
+	})
+
+	result, err := handleGetTaskOutput(context.Background(), q, toJSON(map[string]interface{}{"task_id": "t-big"}))
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	// Should contain truncation marker
+	if !strings.Contains(result.LLMContent, "truncated") {
+		t.Errorf("large output should be truncated")
+	}
+	// Should contain head and tail
+	if !strings.Contains(result.LLMContent, "xxx") {
+		t.Error("result should contain parts of the original output")
+	}
+	// Result should be much smaller than original
+	if len(result.LLMContent) > 10*1024 {
+		t.Errorf("truncated result too large: %d bytes", len(result.LLMContent))
+	}
+}
+
+func TestTruncateLargeOutput_FileWritten(t *testing.T) {
+	tmpDir := t.TempDir()
+	hiveDir := filepath.Join(tmpDir, ".hive")
+	if err := os.MkdirAll(hiveDir, 0755); err != nil {
+		t.Fatal(err)
+	}
+
+	largeOutput := strings.Repeat("a", 20*1024)
+	result := truncateLargeOutput(largeOutput, "test-task", hiveDir)
+
+	// Verify the file was written
+	outputPath := filepath.Join(hiveDir, "outputs", "test-task.log")
+	data, err := os.ReadFile(outputPath)
+	if err != nil {
+		t.Fatalf("expected output file at %s, got error: %v", outputPath, err)
+	}
+	if string(data) != largeOutput {
+		t.Errorf("file content mismatch: got %d bytes, want %d", len(data), len(largeOutput))
+	}
+
+	// Verify result is truncated
+	if !strings.Contains(result, "truncated") {
+		t.Error("result should contain truncation marker")
+	}
+	if strings.Contains(result, strings.Repeat("a", 5000)) {
+		t.Error("result should not contain full output")
+	}
+}
+
+func TestTruncateLargeOutput_SmallPassthrough(t *testing.T) {
+	small := "just a small string"
+	result := truncateLargeOutput(small, "task-1", "/tmp/nonexistent")
+	if result != small {
+		t.Errorf("small output should pass through unchanged, got: %s", result)
 	}
 }
