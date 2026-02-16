@@ -596,7 +596,7 @@ func TestListSessions(t *testing.T) {
 	ctx := context.Background()
 
 	// No sessions yet
-	sessions, err := db.ListSessions(ctx, 10)
+	sessions, err := db.ListSessions(ctx, 10, false)
 	if err != nil {
 		t.Fatalf("ListSessions failed: %v", err)
 	}
@@ -639,7 +639,7 @@ func TestListSessions(t *testing.T) {
 	// s3 has no tasks
 
 	// List all
-	sessions, err = db.ListSessions(ctx, 10)
+	sessions, err = db.ListSessions(ctx, 10, false)
 	if err != nil {
 		t.Fatalf("ListSessions failed: %v", err)
 	}
@@ -698,7 +698,7 @@ func TestListSessions(t *testing.T) {
 	}
 
 	// Test limit
-	sessions, err = db.ListSessions(ctx, 2)
+	sessions, err = db.ListSessions(ctx, 2, false)
 	if err != nil {
 		t.Fatalf("ListSessions with limit failed: %v", err)
 	}
@@ -838,7 +838,7 @@ func TestStopSession(t *testing.T) {
 	}
 
 	// 3. List running sessions - should include our session
-	sessions, err := db.ListSessions(ctx, 10)
+	sessions, err := db.ListSessions(ctx, 10, false)
 	if err != nil {
 		t.Fatalf("ListSessions failed: %v", err)
 	}

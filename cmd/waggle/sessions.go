@@ -25,19 +25,9 @@ func cmdSessions(ctx context.Context, cmd *cli.Command) error {
 	}
 	defer db.Close()
 
-	sessions, err := db.ListSessions(ctx, int(limit))
+	sessions, err := db.ListSessions(ctx, int(limit), onlyRunning)
 	if err != nil {
 		return fmt.Errorf("list sessions: %w", err)
-	}
-
-	if onlyRunning {
-		var filtered []state.SessionSummary
-		for _, s := range sessions {
-			if s.Status != "done" && s.Status != "cancelled" {
-				filtered = append(filtered, s)
-			}
-		}
-		sessions = filtered
 	}
 
 	if jsonOutput {
@@ -63,9 +53,6 @@ func cmdSessions(ctx context.Context, cmd *cli.Command) error {
 			obj = obj[:37] + "..."
 		}
 		sid := s.ID
-		// if len(sid) > 20 {
-		// 	sid = sid[:17] + "..."
-		// }
 		status := s.Status
 		if s.Status != "done" && s.Status != "cancelled" {
 			status = "● " + s.Status
