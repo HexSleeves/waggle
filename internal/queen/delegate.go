@@ -26,6 +26,12 @@ func (q *Queen) delegate(ctx context.Context) error {
 	})
 
 	for _, t := range ready {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+
 		if q.pool.ActiveCount() >= q.cfg.Workers.MaxParallel {
 			q.logVerbose("  ⏸ Max parallel workers reached, queuing remaining")
 			break

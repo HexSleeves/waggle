@@ -16,6 +16,7 @@ func cmdSessions(ctx context.Context, cmd *cli.Command) error {
 	projectDir := cmd.String("project")
 	limit := cmd.Int("limit")
 	jsonOutput := cmd.Bool("json")
+	onlyRunning := cmd.Bool("running")
 
 	hiveDir := filepath.Join(projectDir, ".hive")
 	db, err := state.OpenDB(hiveDir)
@@ -29,6 +30,16 @@ func cmdSessions(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("list sessions: %w", err)
 	}
 
+	if onlyRunning {
+		var filtered []state.SessionSummary
+		for _, s := range sessions {
+			if s.Status != "done" && s.Status != "cancelled" {
+				filtered = append(filtered, s)
+			}
+		}
+		sessions = filtered
+	}
+
 	if jsonOutput {
 		enc := json.NewEncoder(os.Stdout)
 		enc.SetIndent("", "  ")
@@ -36,7 +47,11 @@ func cmdSessions(ctx context.Context, cmd *cli.Command) error {
 	}
 
 	if len(sessions) == 0 {
-		fmt.Println("No sessions found. Run 'waggle run <objective>' to start one.")
+		if onlyRunning {
+			fmt.Println("No running sessions.")
+		} else {
+			fmt.Println("No sessions found. Run 'waggle run <objective>' to start one.")
+		}
 		return nil
 	}
 
@@ -48,11 +63,15 @@ func cmdSessions(ctx context.Context, cmd *cli.Command) error {
 			obj = obj[:37] + "..."
 		}
 		sid := s.ID
-		if len(sid) > 20 {
-			sid = sid[:17] + "..."
+		// if len(sid) > 20 {
+		// 	sid = sid[:17] + "..."
+		// }
+		status := s.Status
+		if s.Status != "done" && s.Status != "cancelled" {
+			status = "● " + s.Status
 		}
 		fmt.Printf("%-20s %-10s %-6d %-6d %-6d  %s\n",
-			sid, s.Status, s.CompletedTasks, s.FailedTasks, s.PendingTasks, obj)
+			sid, status, s.CompletedTasks, s.FailedTasks, s.PendingTasks, obj)
 	}
 	fmt.Printf("\n%d session(s)\n", len(sessions))
 	return nil

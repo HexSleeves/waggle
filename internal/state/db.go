@@ -163,6 +163,15 @@ func (s *DB) UpdateSessionStatus(ctx context.Context, id, status string) error {
 	return err
 }
 
+func (s *DB) StopSession(id string) error {
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	_, err := s.db.Exec(
+		`UPDATE sessions SET status = 'stopped', updated_at = ? WHERE id = ?`,
+		now, id,
+	)
+	return err
+}
+
 type SessionInfo struct {
 	ID        string `json:"id"`
 	Objective string `json:"objective"`

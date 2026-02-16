@@ -128,10 +128,17 @@ func newApp() *cli.Command {
 				Action: cmdLogs,
 			},
 			{
+				Name:      "kill",
+				Usage:     "Stop a running session",
+				ArgsUsage: "<session-id>",
+				Action:    cmdKill,
+			},
+			{
 				Name:  "sessions",
 				Usage: "List past sessions",
 				Flags: []cli.Flag{
 					&cli.IntFlag{Name: "limit", Value: 20, Usage: "Maximum sessions to show"},
+					&cli.BoolFlag{Name: "running", Usage: "Show only running sessions"},
 				},
 				Action: cmdSessions,
 			},

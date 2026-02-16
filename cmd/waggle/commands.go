@@ -699,9 +699,9 @@ func runResumePlain(ctx context.Context, cmd *cli.Command, cfg *config.Config, s
 		fmt.Println("  Resuming Interrupted Session")
 		fmt.Println("══════════════════════════════════════════════════")
 		fmt.Printf("  Session ID: %s\n", sessionID)
-		fmt.Printf("  Objective: %s\n", objective)
-		fmt.Printf("  Adapter:   %s\n", cfg.Workers.DefaultAdapter)
-		fmt.Printf("  Workers:   %d max parallel\n", cfg.Workers.MaxParallel)
+		fmt.Printf("  Objective:  %s\n", objective)
+		fmt.Printf("  Adapter:    %s\n", cfg.Workers.DefaultAdapter)
+		fmt.Printf("  Workers:    %d max parallel\n", cfg.Workers.MaxParallel)
 		fmt.Println("")
 	}
 
@@ -755,5 +755,44 @@ func runResumePlain(ctx context.Context, cmd *cli.Command, cfg *config.Config, s
 		fmt.Println("  Mission Complete")
 		fmt.Println("══════════════════════════════════════════════════")
 	}
+	return nil
+}
+
+func cmdKill(ctx context.Context, cmd *cli.Command) error {
+	args := cmd.Args().Slice()
+	if len(args) != 1 {
+		return fmt.Errorf("usage: waggle kill <session-id>")
+	}
+
+	sessionID := args[0]
+	projectDir := cmd.String("project")
+
+	hiveDir := filepath.Join(projectDir, ".hive")
+	dbPath := filepath.Join(hiveDir, "hive.db")
+
+	if _, err := os.Stat(dbPath); os.IsNotExist(err) {
+		return fmt.Errorf("no sessions found. Run 'waggle run <objective>' first")
+	}
+
+	db, err := state.OpenDB(hiveDir)
+	if err != nil {
+		return fmt.Errorf("open database: %w", err)
+	}
+	defer db.Close()
+
+	session, err := db.GetSession(ctx, sessionID)
+	if err != nil {
+		return fmt.Errorf("session not found: %s", sessionID)
+	}
+
+	if session.Status == "stopped" || session.Status == "done" {
+		return fmt.Errorf("session %s is already %s", sessionID, session.Status)
+	}
+
+	if err := db.StopSession(sessionID); err != nil {
+		return fmt.Errorf("stop session: %w", err)
+	}
+
+	fmt.Printf("Session %s stopped\n", sessionID)
 	return nil
 }

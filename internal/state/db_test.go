@@ -807,3 +807,119 @@ func TestListEvents(t *testing.T) {
 		t.Fatalf("Expected 1 event for session-2, got %d", len(session2Events))
 	}
 }
+
+func TestStopSession(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := OpenDB(tmpDir)
+	if err != nil {
+		t.Fatalf("OpenDB failed: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+
+	// 1. Start a session - should be "running"
+	err = db.CreateSession(ctx, "session-1", "Test Objective")
+	if err != nil {
+		t.Fatalf("CreateSession failed: %v", err)
+	}
+
+	// 2. Get session and verify status is "running"
+	session, err := db.GetSession(ctx, "session-1")
+	if err != nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if session.Status != "running" {
+		t.Errorf("Expected status 'running', got %q", session.Status)
+	}
+
+	// 3. List running sessions - should include our session
+	sessions, err := db.ListSessions(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListSessions failed: %v", err)
+	}
+	if len(sessions) != 1 {
+		t.Errorf("Expected 1 session, got %d", len(sessions))
+	}
+	if sessions[0].Status != "running" {
+		t.Errorf("Expected session status 'running', got %q", sessions[0].Status)
+	}
+
+	// 4. Stop the session
+	err = db.StopSession("session-1")
+	if err != nil {
+		t.Fatalf("StopSession failed: %v", err)
+	}
+
+	// 5. Verify status changed to "stopped"
+	session, err = db.GetSession(ctx, "session-1")
+	if err != nil {
+		t.Fatalf("GetSession failed: %v", err)
+	}
+	if session.Status != "stopped" {
+		t.Errorf("Expected status 'stopped', got %q", session.Status)
+	}
+
+	// 6. Verify updated_at changed
+	if session.UpdatedAt == "" {
+		t.Error("Expected updated_at to be set")
+	}
+}
+
+func TestStopSessionNotFound(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := OpenDB(tmpDir)
+	if err != nil {
+		t.Fatalf("OpenDB failed: %v", err)
+	}
+	defer db.Close()
+
+	// Stopping non-existent session should not return error (SQLite UPDATE with no matching row is OK)
+	err = db.StopSession("non-existent")
+	if err != nil {
+		t.Errorf("StopSession for non-existent should not fail: %v", err)
+	}
+}
+
+func TestStopSessionAlreadyStopped(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := OpenDB(tmpDir)
+	if err != nil {
+		t.Fatalf("OpenDB failed: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+
+	// Create session and stop it
+	err = db.CreateSession(ctx, "session-1", "Test")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	err = db.StopSession("session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Verify status is stopped
+	session, err := db.GetSession(ctx, "session-1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if session.Status != "stopped" {
+		t.Errorf("Expected status 'stopped', got %q", session.Status)
+	}
+
+	// Stop again - should succeed (idempotent)
+	err = db.StopSession("session-1")
+	if err != nil {
+		t.Errorf("StopSession on already stopped session should not fail: %v", err)
+	}
+
+	// Status should still be stopped
+	session, _ = db.GetSession(ctx, "session-1")
+	if session.Status != "stopped" {
+		t.Errorf("Expected status 'stopped', got %q", session.Status)
+	}
+}
