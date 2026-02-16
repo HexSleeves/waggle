@@ -8,7 +8,9 @@ import (
 	"github.com/urfave/cli/v3"
 )
 
-const version = "0.1.0"
+// version is set via ldflags at build time by GoReleaser.
+// e.g. -ldflags "-X main.version=1.2.3"
+var version = "dev"
 
 // newApp creates the CLI application with all flags and commands.
 func newApp() *cli.Command {
@@ -66,6 +68,10 @@ func newApp() *cli.Command {
 			&cli.BoolFlag{
 				Name:  "json",
 				Usage: "Output in JSON format (mutually exclusive with --quiet and --plain)",
+			},
+			&cli.BoolFlag{
+				Name:  "dry-run",
+				Usage: "Plan tasks without executing workers (shows planned task graph)",
 			},
 		},
 		Before: func(ctx context.Context, cmd *cli.Command) (context.Context, error) {

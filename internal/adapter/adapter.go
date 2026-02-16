@@ -66,23 +66,40 @@ func (r *Registry) WorkerFactory() worker.Factory {
 
 // TaskRouter determines which adapter to use for a given task type
 type TaskRouter struct {
-	registry *Registry
-	routes   map[task.Type]string
+	registry       *Registry
+	defaultAdapter string
+	routes         map[task.Type]string
 }
 
-func NewTaskRouter(reg *Registry, defaultAdapter string) *TaskRouter {
+// NewTaskRouter creates a TaskRouter. adapterMap maps task type strings
+// (e.g. "code", "test") to adapter names; it may be nil.
+func NewTaskRouter(reg *Registry, defaultAdapter string, adapterMap ...map[string]string) *TaskRouter {
 	if defaultAdapter == "" {
 		defaultAdapter = "claude-code"
 	}
+	routes := map[task.Type]string{
+		task.TypeCode:     defaultAdapter,
+		task.TypeResearch: defaultAdapter,
+		task.TypeTest:     defaultAdapter,
+		task.TypeReview:   defaultAdapter,
+		task.TypeGeneric:  defaultAdapter,
+	}
+
+	// Apply adapter map overrides
+	if len(adapterMap) > 0 && adapterMap[0] != nil {
+		for typeName, adapterName := range adapterMap[0] {
+			taskType := task.Type(typeName)
+			// Only set the route if the adapter exists in the registry
+			if _, ok := reg.Get(adapterName); ok {
+				routes[taskType] = adapterName
+			}
+		}
+	}
+
 	return &TaskRouter{
-		registry: reg,
-		routes: map[task.Type]string{
-			task.TypeCode:     defaultAdapter,
-			task.TypeResearch: defaultAdapter,
-			task.TypeTest:     defaultAdapter,
-			task.TypeReview:   defaultAdapter,
-			task.TypeGeneric:  defaultAdapter,
-		},
+		registry:       reg,
+		defaultAdapter: defaultAdapter,
+		routes:         routes,
 	}
 }
 
@@ -90,11 +107,29 @@ func (tr *TaskRouter) SetRoute(taskType task.Type, adapterName string) {
 	tr.routes[taskType] = adapterName
 }
 
+// DefaultAdapter returns the configured default adapter name.
+func (tr *TaskRouter) DefaultAdapter() string {
+	return tr.defaultAdapter
+}
+
+// Routes returns a copy of the current task type → adapter mapping.
+func (tr *TaskRouter) Routes() map[task.Type]string {
+	copy := make(map[task.Type]string, len(tr.routes))
+	for k, v := range tr.routes {
+		copy[k] = v
+	}
+	return copy
+}
+
 func (tr *TaskRouter) Route(t *task.Task) string {
 	if name, ok := tr.routes[t.Type]; ok {
 		if a, registered := tr.registry.Get(name); registered && a.Available() {
 			return name
 		}
+	}
+	// Fallback to default adapter if available
+	if a, ok := tr.registry.Get(tr.defaultAdapter); ok && a.Available() {
+		return tr.defaultAdapter
 	}
 	// Fallback to first available
 	avail := tr.registry.Available()

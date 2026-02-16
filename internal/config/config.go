@@ -60,14 +60,16 @@ type QueenConfig struct {
 	PlanTimeout   time.Duration `json:"plan_timeout"`
 	ReviewTimeout time.Duration `json:"review_timeout"`
 	CompactAfter  int           `json:"compact_after_messages"`
+	DryRun        bool          `json:"-"` // Runtime-only: plan without executing workers
 }
 
 type WorkerConfig struct {
-	MaxParallel    int           `json:"max_parallel"`
-	DefaultTimeout time.Duration `json:"default_timeout"`
-	MaxRetries     int           `json:"max_retries"`
-	DefaultAdapter string        `json:"default_adapter"`
-	MaxOutputSize  int           `json:"max_output_size"`
+	MaxParallel    int               `json:"max_parallel"`
+	DefaultTimeout time.Duration     `json:"default_timeout"`
+	MaxRetries     int               `json:"max_retries"`
+	DefaultAdapter string            `json:"default_adapter"`
+	MaxOutputSize  int               `json:"max_output_size"`
+	AdapterMap     map[string]string `json:"adapter_map,omitempty"` // task type → adapter name
 }
 
 type AdapterConfig struct {

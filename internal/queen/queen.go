@@ -303,7 +303,7 @@ func New(cfg *config.Config, logger *log.Logger) (*Queen, error) {
 		guard,
 	).WithMaxOutput(maxOut))
 
-	router := adapter.NewTaskRouter(registry, cfg.Workers.DefaultAdapter)
+	router := adapter.NewTaskRouter(registry, cfg.Workers.DefaultAdapter, cfg.Workers.AdapterMap)
 
 	// Initialize worker pool
 	pool := worker.NewPool(

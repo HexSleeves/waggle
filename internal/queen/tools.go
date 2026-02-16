@@ -337,6 +337,10 @@ type assignTaskInput struct {
 }
 
 func handleAssignTask(ctx context.Context, q *Queen, input json.RawMessage) (ToolOutput, error) {
+	if q.cfg.Queen.DryRun {
+		return ToolOutput{}, fmt.Errorf("dry-run mode: task assignment blocked. Use get_status to review the planned task graph, then call complete with your plan summary.")
+	}
+
 	var in assignTaskInput
 	if err := json.Unmarshal(input, &in); err != nil {
 		return ToolOutput{}, fmt.Errorf("invalid input: %w", err)
@@ -600,6 +604,10 @@ type waitForWorkersInput struct {
 }
 
 func handleWaitForWorkers(ctx context.Context, q *Queen, input json.RawMessage) (ToolOutput, error) {
+	if q.cfg.Queen.DryRun {
+		return ToolOutput{LLMContent: "dry-run mode: no workers running"}, nil
+	}
+
 	var in waitForWorkersInput
 	if len(input) > 0 {
 		if err := json.Unmarshal(input, &in); err != nil {
@@ -897,7 +905,51 @@ func handleComplete(ctx context.Context, q *Queen, input json.RawMessage) (ToolO
 		q.logger.Printf("⚠ Warning: failed to update session status: %v", err)
 	}
 
+	if q.cfg.Queen.DryRun {
+		graph := formatDryRunTaskGraph(q)
+		q.logger.Printf("\n%s", graph)
+		return ToolOutput{LLMContent: fmt.Sprintf("Dry-run complete. Summary: %s\n\n%s", in.Summary, graph)}, nil
+	}
+
 	return ToolOutput{LLMContent: fmt.Sprintf("Objective marked as done. Summary: %s", in.Summary)}, nil
+}
+
+// formatDryRunTaskGraph builds a human-readable task graph for dry-run output.
+func formatDryRunTaskGraph(q *Queen) string {
+	allTasks := q.tasks.All()
+	if len(allTasks) == 0 {
+		return "No tasks planned."
+	}
+
+	var b strings.Builder
+	b.WriteString("╔══════════════════════════════════════════════════╗\n")
+	b.WriteString("║          🔍 DRY-RUN TASK GRAPH                   ║\n")
+	b.WriteString("╚══════════════════════════════════════════════════╝\n")
+	fmt.Fprintf(&b, "\n  Tasks planned: %d\n\n", len(allTasks))
+
+	priorityLabel := map[int]string{0: "low", 1: "normal", 2: "high", 3: "critical"}
+
+	for i, t := range allTasks {
+		pLabel := priorityLabel[int(t.Priority)]
+		if pLabel == "" {
+			pLabel = fmt.Sprintf("%d", t.Priority)
+		}
+		fmt.Fprintf(&b, "  %d. [%s] %s\n", i+1, t.Type, t.Title)
+		fmt.Fprintf(&b, "     ID: %s | Priority: %s\n", t.ID, pLabel)
+		if len(t.DependsOn) > 0 {
+			fmt.Fprintf(&b, "     Depends on: %s\n", strings.Join(t.DependsOn, ", "))
+		} else {
+			b.WriteString("     Depends on: (none — ready to run)\n")
+		}
+		if i < len(allTasks)-1 {
+			b.WriteString("\n")
+		}
+	}
+
+	b.WriteString("\n  " + strings.Repeat("═", 48) + "\n")
+	b.WriteString("  This was a dry run. No workers were executed.\n")
+
+	return b.String()
 }
 
 // ---------- fail ----------

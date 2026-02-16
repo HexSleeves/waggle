@@ -59,11 +59,12 @@ You PLAN, DELEGATE, MONITOR, REVIEW, and REPLAN. You never write code yourself �
 - 0 (low) — Nice to have
 
 ## Current Configuration
-- Worker adapter: %s
+- Default worker adapter: %s
 - Max parallel workers: %d
 - Max retries per task: %d
 - Project directory: %s
 - Available adapters: %s
+%s
 
 ## Important
 - You are the orchestrator, NOT the implementer. Your workers do the actual work.
@@ -81,12 +82,52 @@ func (q *Queen) buildSystemPrompt() string {
 		}
 	}
 
-	return fmt.Sprintf(systemPromptTemplate,
+	// Build adapter map description for the prompt
+	adapterMapInfo := ""
+	if q.router != nil {
+		routes := q.router.Routes()
+		defaultAdapter := q.router.DefaultAdapter()
+		// Check if any route differs from the default
+		hasCustomRoutes := false
+		for _, adapter := range routes {
+			if adapter != defaultAdapter {
+				hasCustomRoutes = true
+				break
+			}
+		}
+		if hasCustomRoutes {
+			var lines []string
+			for taskType, adapter := range routes {
+				lines = append(lines, fmt.Sprintf("  - %s → %s", taskType, adapter))
+			}
+			adapterMapInfo = "- Adapter routing per task type:\n" + strings.Join(lines, "\n")
+		}
+	}
+
+	prompt := fmt.Sprintf(systemPromptTemplate,
 		q.cfg.Workers.MaxRetries,
 		q.cfg.Workers.DefaultAdapter,
 		q.cfg.Workers.MaxParallel,
 		q.cfg.Workers.MaxRetries,
 		q.cfg.ProjectDir,
 		availableAdapters,
+		adapterMapInfo,
 	)
+
+	if q.cfg.Queen.DryRun {
+		prompt += dryRunInstruction
+	}
+
+	return prompt
 }
+
+const dryRunInstruction = `
+
+## DRY-RUN MODE ACTIVE
+You are running in dry-run mode. Your goal is to PLAN but NOT EXECUTE.
+- Use read_file and list_files to understand the project.
+- Use create_tasks to define the full task graph with dependencies, types, and priorities.
+- Do NOT call assign_task (it will be blocked).
+- Do NOT call wait_for_workers (no workers will run).
+- After planning, use get_status to review the task graph.
+- Then call complete with a summary describing what WOULD be done: list each task, its purpose, and the execution order based on dependencies.`

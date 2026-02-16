@@ -48,6 +48,9 @@ func loadConfigFromCtx(ctx context.Context, cmd *cli.Command) (*config.Config, e
 	cfg.Output.JSON = cmd.Bool("json")
 	cfg.Output.Plain = cmd.Bool("plain")
 
+	// Propagate dry-run flag
+	cfg.Queen.DryRun = cmd.Bool("dry-run")
+
 	return cfg, nil
 }
 
@@ -63,6 +66,12 @@ func cmdInit(ctx context.Context, cmd *cli.Command) error {
 
 	cfg := config.DefaultConfig()
 	cfg.ProjectDir = projectDir
+	// Include example adapter_map so users can see the option
+	cfg.Workers.AdapterMap = map[string]string{
+		"code":   "claude-code",
+		"test":   "claude-code",
+		"review": "claude-code",
+	}
 	if err := cfg.Save(configPath); err != nil {
 		return fmt.Errorf("save config: %w", err)
 	}
@@ -88,6 +97,12 @@ func cmdConfig(ctx context.Context, cmd *cli.Command) error {
 	fmt.Printf("  Default Adapter: %s\n", cfg.Workers.DefaultAdapter)
 	fmt.Printf("  Max Retries:     %d\n", cfg.Workers.MaxRetries)
 	fmt.Printf("  Worker Timeout:  %v\n", cfg.Workers.DefaultTimeout)
+	if len(cfg.Workers.AdapterMap) > 0 {
+		fmt.Printf("  Adapter Map:\n")
+		for taskType, adapterName := range cfg.Workers.AdapterMap {
+			fmt.Printf("    %s → %s\n", taskType, adapterName)
+		}
+	}
 	fmt.Printf("  Available Adapters:\n")
 	for name, a := range cfg.Adapters {
 		fmt.Printf("    - %s: %s %v\n", name, a.Command, a.Args)

@@ -115,6 +115,76 @@ func TestTaskRouter(t *testing.T) {
 	}
 }
 
+// TestTaskRouterWithAdapterMap tests that adapter_map entries override the default adapter
+func TestTaskRouterWithAdapterMap(t *testing.T) {
+	registry := NewRegistry()
+	registry.Register(&MockAdapter{name: "claude-code", available: true})
+	registry.Register(&MockAdapter{name: "kimi", available: true})
+	registry.Register(&MockAdapter{name: "exec", available: true})
+
+	adapterMap := map[string]string{
+		"code": "kimi",
+		"test": "exec",
+	}
+	router := NewTaskRouter(registry, "claude-code", adapterMap)
+
+	// code tasks should route to kimi
+	route := router.Route(&task.Task{Type: task.TypeCode})
+	if route != "kimi" {
+		t.Errorf("expected code task to route to kimi, got %s", route)
+	}
+
+	// test tasks should route to exec
+	route = router.Route(&task.Task{Type: task.TypeTest})
+	if route != "exec" {
+		t.Errorf("expected test task to route to exec, got %s", route)
+	}
+
+	// review tasks should use default adapter (not in adapter_map)
+	route = router.Route(&task.Task{Type: task.TypeReview})
+	if route != "claude-code" {
+		t.Errorf("expected review task to route to claude-code, got %s", route)
+	}
+}
+
+// TestTaskRouterFallbackToDefault tests that unmapped task types fall back to default
+func TestTaskRouterFallbackToDefault(t *testing.T) {
+	registry := NewRegistry()
+	registry.Register(&MockAdapter{name: "claude-code", available: true})
+	registry.Register(&MockAdapter{name: "kimi", available: true})
+
+	adapterMap := map[string]string{
+		"code": "kimi",
+	}
+	router := NewTaskRouter(registry, "claude-code", adapterMap)
+
+	// research, test, review, generic should all fall back to default
+	for _, tt := range []task.Type{task.TypeResearch, task.TypeTest, task.TypeReview, task.TypeGeneric} {
+		route := router.Route(&task.Task{Type: tt})
+		if route != "claude-code" {
+			t.Errorf("expected %s task to fall back to claude-code, got %s", tt, route)
+		}
+	}
+}
+
+// TestTaskRouterMissingAdapter tests that a mapped adapter not in the registry falls back to default
+func TestTaskRouterMissingAdapter(t *testing.T) {
+	registry := NewRegistry()
+	registry.Register(&MockAdapter{name: "claude-code", available: true})
+	// "kimi" is NOT registered
+
+	adapterMap := map[string]string{
+		"code": "kimi", // kimi not in registry
+	}
+	router := NewTaskRouter(registry, "claude-code", adapterMap)
+
+	// code task mapped to kimi, but kimi doesn't exist — should fall back to default
+	route := router.Route(&task.Task{Type: task.TypeCode})
+	if route != "claude-code" {
+		t.Errorf("expected code task to fall back to claude-code when kimi is missing, got %s", route)
+	}
+}
+
 // TestClaudeAdapter tests Claude adapter functionality
 func TestClaudeAdapter(t *testing.T) {
 	tempDir := t.TempDir()

@@ -383,3 +383,85 @@ func TestIsPlain(t *testing.T) {
 		t.Error("IsPlain() should be true after setting Output.Plain")
 	}
 }
+
+func TestConfigAdapterMapParsing(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "waggle.json")
+
+	// Save config with adapter_map
+	original := DefaultConfig()
+	original.Workers.AdapterMap = map[string]string{
+		"code":   "kimi",
+		"test":   "exec",
+		"review": "claude-code",
+	}
+	if err := original.Save(path); err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+
+	// Load it back
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+
+	if len(loaded.Workers.AdapterMap) != 3 {
+		t.Fatalf("AdapterMap length = %d, want 3", len(loaded.Workers.AdapterMap))
+	}
+
+	expected := map[string]string{
+		"code":   "kimi",
+		"test":   "exec",
+		"review": "claude-code",
+	}
+	for k, v := range expected {
+		if loaded.Workers.AdapterMap[k] != v {
+			t.Errorf("AdapterMap[%q] = %q, want %q", k, loaded.Workers.AdapterMap[k], v)
+		}
+	}
+}
+
+func TestConfigAdapterMapOmittedWhenEmpty(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "waggle.json")
+
+	// Save config without adapter_map
+	cfg := DefaultConfig()
+	if err := cfg.Save(path); err != nil {
+		t.Fatalf("Save() error: %v", err)
+	}
+
+	// Verify the JSON doesn't contain adapter_map
+	data, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("ReadFile() error: %v", err)
+	}
+
+	contents := string(data)
+	if filepath.Ext(path) == ".json" {
+		// adapter_map should not appear in JSON when nil/empty
+		for _, substr := range []string{"adapter_map"} {
+			if len(contents) > 0 {
+				found := false
+				for i := 0; i <= len(contents)-len(substr); i++ {
+					if contents[i:i+len(substr)] == substr {
+						found = true
+						break
+					}
+				}
+				if found {
+					t.Error("adapter_map should be omitted from JSON when empty")
+				}
+			}
+		}
+	}
+
+	// Load back and verify nil
+	loaded, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load() error: %v", err)
+	}
+	if loaded.Workers.AdapterMap != nil {
+		t.Errorf("AdapterMap should be nil when not set, got %v", loaded.Workers.AdapterMap)
+	}
+}

@@ -67,9 +67,9 @@
 
 ## P3 — Low Priority
 
-- [ ] **Binary releases** — GoReleaser or GH Actions for linux/mac/arm64
-- [ ] **Mixed adapters per task type** — e.g., `"code": "kimi", "test": "exec"`
-- [ ] **`--dry-run` flag** — Show planned task graph without executing
+- [x] **Binary releases** — GoReleaser + GH Actions for linux/mac/arm64/windows
+- [x] **Mixed adapters per task type** — `adapter_map` routes task types to specific adapters
+- [x] **`--dry-run` flag** — Shows planned task graph without executing workers
 - [ ] **Progress bar / ETA in TUI** — `[3/5 tasks, ~2 min remaining]`
 - [ ] **Task dependency DAG visualization** — TUI or `dot` export
 - [ ] **Review Rejection Integration Test** — test reject→re-queue→re-execute cycle
