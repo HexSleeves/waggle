@@ -591,3 +591,221 @@ func TestSessionInfoStruct(t *testing.T) {
 		t.Error("Objective mismatch")
 	}
 }
+
+func TestListSessions(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := OpenDB(tmpDir)
+	if err != nil {
+		t.Fatalf("OpenDB failed: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+
+	// No sessions yet
+	sessions, err := db.ListSessions(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListSessions failed: %v", err)
+	}
+	if len(sessions) != 0 {
+		t.Errorf("Expected 0 sessions, got %d", len(sessions))
+	}
+
+	// Create sessions with a small delay so created_at ordering is deterministic
+	if err := db.CreateSession(ctx, "s1", "First objective"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if err := db.CreateSession(ctx, "s2", "Second objective"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(10 * time.Millisecond)
+	if err := db.CreateSession(ctx, "s3", "Third objective"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Add tasks to s1: 1 complete, 1 failed
+	if err := db.InsertTask(ctx, "s1", TaskRow{ID: "t1", Type: "code", Status: "complete", Title: "T1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InsertTask(ctx, "s1", TaskRow{ID: "t2", Type: "code", Status: "failed", Title: "T2"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Add tasks to s2: 2 pending, 1 complete
+	if err := db.InsertTask(ctx, "s2", TaskRow{ID: "t3", Type: "code", Status: "pending", Title: "T3"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InsertTask(ctx, "s2", TaskRow{ID: "t4", Type: "code", Status: "pending", Title: "T4"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := db.InsertTask(ctx, "s2", TaskRow{ID: "t5", Type: "code", Status: "complete", Title: "T5"}); err != nil {
+		t.Fatal(err)
+	}
+
+	// s3 has no tasks
+
+	// List all
+	sessions, err = db.ListSessions(ctx, 10)
+	if err != nil {
+		t.Fatalf("ListSessions failed: %v", err)
+	}
+	if len(sessions) != 3 {
+		t.Fatalf("Expected 3 sessions, got %d", len(sessions))
+	}
+
+	// Should be ordered by created_at DESC: s3, s2, s1
+	if sessions[0].ID != "s3" {
+		t.Errorf("Expected first session s3, got %s", sessions[0].ID)
+	}
+	if sessions[1].ID != "s2" {
+		t.Errorf("Expected second session s2, got %s", sessions[1].ID)
+	}
+	if sessions[2].ID != "s1" {
+		t.Errorf("Expected third session s1, got %s", sessions[2].ID)
+	}
+
+	// Verify s3 (no tasks)
+	if sessions[0].TotalTasks != 0 {
+		t.Errorf("s3: expected 0 total tasks, got %d", sessions[0].TotalTasks)
+	}
+
+	// Verify s2 counts
+	if sessions[1].TotalTasks != 3 {
+		t.Errorf("s2: expected 3 total tasks, got %d", sessions[1].TotalTasks)
+	}
+	if sessions[1].CompletedTasks != 1 {
+		t.Errorf("s2: expected 1 completed, got %d", sessions[1].CompletedTasks)
+	}
+	if sessions[1].PendingTasks != 2 {
+		t.Errorf("s2: expected 2 pending, got %d", sessions[1].PendingTasks)
+	}
+	if sessions[1].FailedTasks != 0 {
+		t.Errorf("s2: expected 0 failed, got %d", sessions[1].FailedTasks)
+	}
+
+	// Verify s1 counts
+	if sessions[2].TotalTasks != 2 {
+		t.Errorf("s1: expected 2 total tasks, got %d", sessions[2].TotalTasks)
+	}
+	if sessions[2].CompletedTasks != 1 {
+		t.Errorf("s1: expected 1 completed, got %d", sessions[2].CompletedTasks)
+	}
+	if sessions[2].FailedTasks != 1 {
+		t.Errorf("s1: expected 1 failed, got %d", sessions[2].FailedTasks)
+	}
+
+	// Test limit
+	sessions, err = db.ListSessions(ctx, 2)
+	if err != nil {
+		t.Fatalf("ListSessions with limit failed: %v", err)
+	}
+	if len(sessions) != 2 {
+		t.Errorf("Expected 2 sessions with limit=2, got %d", len(sessions))
+	}
+}
+
+func TestListEvents(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := OpenDB(tmpDir)
+	if err != nil {
+		t.Fatalf("OpenDB failed: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if err := db.CreateSession(ctx, "session-1", "Test"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Append several events with different types
+	id1, err := db.AppendEvent(ctx, "session-1", "task.created", map[string]string{"task_id": "t1"})
+	if err != nil {
+		t.Fatalf("AppendEvent failed: %v", err)
+	}
+	id2, err := db.AppendEvent(ctx, "session-1", "worker.spawned", map[string]string{"worker_id": "w1"})
+	if err != nil {
+		t.Fatalf("AppendEvent failed: %v", err)
+	}
+	id3, err := db.AppendEvent(ctx, "session-1", "task.status_changed", map[string]interface{}{"task_id": "t1", "payload": map[string]string{"new": "running"}})
+	if err != nil {
+		t.Fatalf("AppendEvent failed: %v", err)
+	}
+	id4, err := db.AppendEvent(ctx, "session-1", "worker.completed", map[string]string{"worker_id": "w1"})
+	if err != nil {
+		t.Fatalf("AppendEvent failed: %v", err)
+	}
+
+	// Also append an event to a different session to verify filtering
+	if err := db.CreateSession(ctx, "session-2", "Other"); err != nil {
+		t.Fatal(err)
+	}
+	_, _ = db.AppendEvent(ctx, "session-2", "task.created", map[string]string{"task_id": "t99"})
+
+	// List all events for session-1
+	events, err := db.ListEvents(ctx, "session-1", 100, 0)
+	if err != nil {
+		t.Fatalf("ListEvents failed: %v", err)
+	}
+	if len(events) != 4 {
+		t.Fatalf("Expected 4 events, got %d", len(events))
+	}
+
+	// Verify order (ascending by id)
+	if events[0].ID != id1 || events[1].ID != id2 || events[2].ID != id3 || events[3].ID != id4 {
+		t.Errorf("Events not in expected order: %v %v %v %v", events[0].ID, events[1].ID, events[2].ID, events[3].ID)
+	}
+
+	// Verify types
+	if events[0].Type != "task.created" {
+		t.Errorf("Expected type 'task.created', got %s", events[0].Type)
+	}
+	if events[1].Type != "worker.spawned" {
+		t.Errorf("Expected type 'worker.spawned', got %s", events[1].Type)
+	}
+
+	// Verify session_id
+	for _, e := range events {
+		if e.SessionID != "session-1" {
+			t.Errorf("Expected session_id 'session-1', got %s", e.SessionID)
+		}
+	}
+
+	// Verify data is non-empty
+	if events[0].Data == "" {
+		t.Error("Expected non-empty data for first event")
+	}
+
+	// Test afterID filtering: get events after id2
+	eventsAfter, err := db.ListEvents(ctx, "session-1", 100, id2)
+	if err != nil {
+		t.Fatalf("ListEvents with afterID failed: %v", err)
+	}
+	if len(eventsAfter) != 2 {
+		t.Fatalf("Expected 2 events after id %d, got %d", id2, len(eventsAfter))
+	}
+	if eventsAfter[0].ID != id3 {
+		t.Errorf("Expected first event after id2 to be id3=%d, got %d", id3, eventsAfter[0].ID)
+	}
+
+	// Test limit
+	limitedEvents, err := db.ListEvents(ctx, "session-1", 2, 0)
+	if err != nil {
+		t.Fatalf("ListEvents with limit failed: %v", err)
+	}
+	if len(limitedEvents) != 2 {
+		t.Fatalf("Expected 2 events with limit=2, got %d", len(limitedEvents))
+	}
+	if limitedEvents[0].ID != id1 || limitedEvents[1].ID != id2 {
+		t.Error("Limited events should be the first two")
+	}
+
+	// Test filtering by session: session-2 should have only 1 event
+	session2Events, err := db.ListEvents(ctx, "session-2", 100, 0)
+	if err != nil {
+		t.Fatalf("ListEvents for session-2 failed: %v", err)
+	}
+	if len(session2Events) != 1 {
+		t.Fatalf("Expected 1 event for session-2, got %d", len(session2Events))
+	}
+}

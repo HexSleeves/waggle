@@ -1,6 +1,6 @@
 # Waggle — TODO
 
-> Prioritized next steps for the next agent. Updated 2026-02-16.
+> Prioritized next steps for the next agent. Updated 2026-02-16 (session 2).
 
 ## What's Done (don't redo these)
 
@@ -20,18 +20,10 @@
 - [x] Session resume E2E — 7 tests covering interrupted session continuity, task state restore, conversation history
 - [x] TUI resume mode — `cmdResume` wired into TUI with `runResumeTUI`, shared `startQueenWithFunc` helper
 - [x] Adapter health check — `HealthCheck()` on `CLIAdapter`, `setupAdapters()` extracted, fails fast before planning
+- [x] `waggle sessions` — list past sessions with task counts, JSON output support
+- [x] `waggle logs` — tail/stream event log with `--follow`, emoji icons, JSON output
 
 ## P1 — High (next up)
-
-### 4. `waggle sessions` Command
-List all past sessions with objective, status, task counts, timestamps.
-- Query `sessions` table in SQLite
-- Files: `cmd/waggle/` (new command), `internal/state/db.go` (new query)
-
-### 5. `waggle logs` Command
-Stream or tail event log for a session.
-- Query `events` table filtered by session_id
-- Files: `cmd/waggle/` (new command), `internal/state/db.go` (new query)
 
 ### 6. Review Rejection Integration Test
 Test that a rejected task actually gets re-queued with feedback and re-executed by a new worker.

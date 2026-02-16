@@ -215,6 +215,36 @@ func (s *DB) GetSessionPhase(ctx context.Context, sessionID string) (string, int
 
 // --- Event log (append-only) ---
 
+// EventRow represents a row from the events table.
+type EventRow struct {
+	ID        int64  `json:"id"`
+	SessionID string `json:"session_id"`
+	Type      string `json:"type"`
+	Data      string `json:"data"`
+	CreatedAt string `json:"created_at"`
+}
+
+// ListEvents returns events for a session, ordered by creation time.
+// If afterID > 0, only returns events with id > afterID (for tailing).
+func (s *DB) ListEvents(ctx context.Context, sessionID string, limit int, afterID int64) ([]EventRow, error) {
+	query := `SELECT id, session_id, type, COALESCE(data, ''), created_at FROM events
+	          WHERE session_id = ? AND id > ? ORDER BY id ASC LIMIT ?`
+	rows, err := s.db.QueryContext(ctx, query, sessionID, afterID, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var events []EventRow
+	for rows.Next() {
+		var e EventRow
+		if err := rows.Scan(&e.ID, &e.SessionID, &e.Type, &e.Data, &e.CreatedAt); err != nil {
+			return nil, err
+		}
+		events = append(events, e)
+	}
+	return events, rows.Err()
+}
+
 func (s *DB) AppendEvent(ctx context.Context, sessionID, eventType string, data interface{}) (int64, error) {
 	var dataStr string
 	if data != nil {
@@ -517,6 +547,49 @@ func scanTask(row scannable) (*TaskRow, error) {
 
 func scanTaskRows(rows *sql.Rows) (*TaskRow, error) {
 	return scanTask(rows)
+}
+
+// SessionSummary includes session info plus task counts.
+type SessionSummary struct {
+	ID             string `json:"id"`
+	Objective      string `json:"objective"`
+	Status         string `json:"status"`
+	CreatedAt      string `json:"created_at"`
+	UpdatedAt      string `json:"updated_at"`
+	TotalTasks     int    `json:"total_tasks"`
+	CompletedTasks int    `json:"completed_tasks"`
+	FailedTasks    int    `json:"failed_tasks"`
+	PendingTasks   int    `json:"pending_tasks"`
+}
+
+// ListSessions returns session summaries with task counts, ordered by most recent first.
+func (s *DB) ListSessions(ctx context.Context, limit int) ([]SessionSummary, error) {
+	rows, err := s.db.QueryContext(ctx, `
+		SELECT s.id, s.objective, s.status, s.created_at, s.updated_at,
+			COUNT(t.id) AS total_tasks,
+			SUM(CASE WHEN t.status = 'complete' THEN 1 ELSE 0 END) AS completed,
+			SUM(CASE WHEN t.status = 'failed' THEN 1 ELSE 0 END) AS failed,
+			SUM(CASE WHEN t.status = 'pending' THEN 1 ELSE 0 END) AS pending
+		FROM sessions s
+		LEFT JOIN tasks t ON s.id = t.session_id
+		GROUP BY s.id
+		ORDER BY s.created_at DESC
+		LIMIT ?`, limit)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var sessions []SessionSummary
+	for rows.Next() {
+		var ss SessionSummary
+		if err := rows.Scan(&ss.ID, &ss.Objective, &ss.Status, &ss.CreatedAt, &ss.UpdatedAt,
+			&ss.TotalTasks, &ss.CompletedTasks, &ss.FailedTasks, &ss.PendingTasks); err != nil {
+			return nil, err
+		}
+		sessions = append(sessions, ss)
+	}
+	return sessions, rows.Err()
 }
 
 // ResetRunningTasks marks all 'running' tasks as 'pending' for session resumption.

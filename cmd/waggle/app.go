@@ -116,6 +116,24 @@ func newApp() *cli.Command {
 				Usage:  "Show current configuration",
 				Action: cmdConfig,
 			},
+			{
+				Name:      "logs",
+				Usage:     "Show event log for a session",
+				ArgsUsage: "[session-id]",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{Name: "follow", Aliases: []string{"f"}, Usage: "Follow log output"},
+					&cli.IntFlag{Name: "limit", Aliases: []string{"n"}, Value: 100, Usage: "Number of events to show"},
+				},
+				Action: cmdLogs,
+			},
+			{
+				Name:  "sessions",
+				Usage: "List past sessions",
+				Flags: []cli.Flag{
+					&cli.IntFlag{Name: "limit", Value: 20, Usage: "Maximum sessions to show"},
+				},
+				Action: cmdSessions,
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			// Default action: treat remaining args as objective (implicit run)
