@@ -41,17 +41,17 @@ type CLIAdapter struct {
 
 // CLIAdapterConfig holds the configuration for creating a CLIAdapter.
 type CLIAdapterConfig struct {
-	Name       string
-	Command    string
-	Args       []string
-	WorkDir    string
-	Guard      *safety.Guard
-	Mode       PromptMode
+	Name    string
+	Command string
+	Args    []string
+	WorkDir string
+	Guard   *safety.Guard
+	Mode    PromptMode
 	// FallbackPaths are checked if the command isn't on PATH.
 	FallbackPaths []string
 	// MaxOutputSize caps worker output at this many bytes (0 = unlimited).
 	MaxOutputSize int
-}// NewCLIAdapter creates a generic CLI adapter from config.
+} // NewCLIAdapter creates a generic CLI adapter from config.
 func NewCLIAdapter(cfg CLIAdapterConfig) *CLIAdapter {
 	command := cfg.Command
 	// Resolve command if not on PATH

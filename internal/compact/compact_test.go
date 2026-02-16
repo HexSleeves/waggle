@@ -216,8 +216,8 @@ func TestEstimateTokens(t *testing.T) {
 		{"", 0},
 		{"abcd", 1},
 		{"abcdefgh", 2},
-		{"ab", 0},       // 2/4 = 0 (integer division)
-		{"abcde", 1},   // 5/4 = 1
+		{"ab", 0},    // 2/4 = 0 (integer division)
+		{"abcde", 1}, // 5/4 = 1
 		{strings.Repeat("a", 400), 100},
 	}
 	for _, tt := range tests {

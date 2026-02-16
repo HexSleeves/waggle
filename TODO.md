@@ -1,6 +1,6 @@
 # Waggle — TODO
 
-> Prioritized next steps for the next agent. Updated 2026-02-15.
+> Prioritized next steps for the next agent. Updated 2026-02-16.
 
 ## What's Done (don't redo these)
 
@@ -17,29 +17,11 @@
 - [x] Justfile for build/test/run commands
 - [x] Queen god-object split into delegate.go, planner.go, failure.go, reporter.go
 - [x] Comprehensive test suite: 12,600 lines, 30 test files, all passing
+- [x] Session resume E2E — 7 tests covering interrupted session continuity, task state restore, conversation history
+- [x] TUI resume mode — `cmdResume` wired into TUI with `runResumeTUI`, shared `startQueenWithFunc` helper
+- [x] Adapter health check — `HealthCheck()` on `CLIAdapter`, `setupAdapters()` extracted, fails fast before planning
 
 ## P1 — High (next up)
-
-### 1. Session Resume End-to-End
-The `waggle resume <session-id>` command exists but hasn't been validated end-to-end. Test:
-- Start a run, interrupt it (Ctrl+C), resume it
-- Verify task state is restored from SQLite
-- Verify completed tasks aren't re-run
-- Verify agent mode conversation history is restored from kv store
-- Files: `cmd/waggle/commands.go` (cmdResume), `internal/queen/queen.go` (ResumeSession)
-
-### 2. TUI Resume Mode
-`cmdResume` currently only works with plain output. Wire TUI into resume path:
-- Use same `runWithTUI` pattern from `commands.go`
-- Files: `cmd/waggle/commands.go`
-
-### 3. Adapter Health Check on Startup
-Before planning, verify the chosen adapter can actually run. Currently if `claude` isn't logged in, the first task fails after a long planning phase.
-- Add `HealthCheck()` to `CLIAdapter` that runs a trivial command (e.g., `claude -p "hi"`)
-- Call it before `Run()`/`RunAgent()` starts
-- Files: `internal/adapter/generic.go`, `internal/queen/queen.go`
-
-## P2 — Medium
 
 ### 4. `waggle sessions` Command
 List all past sessions with objective, status, task counts, timestamps.
@@ -70,7 +52,6 @@ Test that a rejected task actually gets re-queued with feedback and re-executed 
 - Legacy mode uses the worker adapter for planning (spawns a "planner" worker). Agent mode avoids this.
 - `compact.Context` is write-only — wired into Queen but never read for decisions.
 - Blackboard is in-memory + persisted. On resume, in-memory starts empty.
-- `cmdResume` doesn't use TUI yet.
 
 ## VM Notes
 

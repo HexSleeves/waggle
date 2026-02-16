@@ -247,9 +247,9 @@ func TestCalculateBackoffWithJitter(t *testing.T) {
 	// Run multiple times to account for randomness
 	for i := 0; i < 10; i++ {
 		result := CalculateBackoffWithJitter(baseDelay, retryCount, maxDelay, jitterPercent)
-		expectedBase := 8 * time.Second                                  // 2 * 2^2
-		minExpected := time.Duration(float64(expectedBase) * 0.95)       // -5% from jitter
-		maxExpected := time.Duration(float64(expectedBase) * 1.05)       // +5% from jitter
+		expectedBase := 8 * time.Second                            // 2 * 2^2
+		minExpected := time.Duration(float64(expectedBase) * 0.95) // -5% from jitter
+		maxExpected := time.Duration(float64(expectedBase) * 1.05) // +5% from jitter
 
 		if result < minExpected || result > maxExpected {
 			t.Errorf("CalculateBackoffWithJitter result %v outside expected range [%v, %v]",

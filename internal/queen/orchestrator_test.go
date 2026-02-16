@@ -297,13 +297,13 @@ func TestFullLoopWithPreDefinedTasks(t *testing.T) {
 		{
 			ID: "write", Type: task.TypeCode, Status: task.StatusPending,
 			Priority: task.PriorityHigh,
-			Title: "Write file", Description: "echo hello > /dev/null",
+			Title:    "Write file", Description: "echo hello > /dev/null",
 			MaxRetries: 1, Timeout: 10 * time.Second,
 		},
 		{
 			ID: "verify", Type: task.TypeTest, Status: task.StatusPending,
 			Priority: task.PriorityNormal,
-			Title: "Verify", Description: "echo verified",
+			Title:    "Verify", Description: "echo verified",
 			DependsOn:  []string{"write"},
 			MaxRetries: 1, Timeout: 10 * time.Second,
 		},
