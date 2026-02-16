@@ -57,7 +57,7 @@ func loadConfigFromCtx(ctx context.Context, cmd *cli.Command) (*config.Config, e
 func cmdInit(ctx context.Context, cmd *cli.Command) error {
 	projectDir := cmd.String("project")
 	configPath := cmd.String("config")
-	logger := log.New(os.Stderr, "", log.LstdFlags)
+	p := output.NewPrinter(output.ModePlain, false)
 
 	hiveDir := filepath.Join(projectDir, ".hive")
 	if err := os.MkdirAll(hiveDir, 0755); err != nil {
@@ -76,8 +76,8 @@ func cmdInit(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("save config: %w", err)
 	}
 
-	logger.Printf("Initialized hive at %s", hiveDir)
-	logger.Printf("Config saved to %s", configPath)
+	p.Success("Initialized hive at %s", hiveDir)
+	p.Success("Config saved to %s", configPath)
 	return nil
 }
 
@@ -89,14 +89,17 @@ func cmdConfig(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("load config: %w", err)
 	}
 
-	fmt.Printf("Configuration (%s):\n", configPath)
-	fmt.Printf("  Project Dir:     %s\n", cfg.ProjectDir)
-	fmt.Printf("  Hive Dir:        %s\n", cfg.HiveDir)
-	fmt.Printf("  Queen Model:     %s (%s)\n", cfg.Queen.Model, cfg.Queen.Provider)
-	fmt.Printf("  Max Workers:     %d\n", cfg.Workers.MaxParallel)
-	fmt.Printf("  Default Adapter: %s\n", cfg.Workers.DefaultAdapter)
-	fmt.Printf("  Max Retries:     %d\n", cfg.Workers.MaxRetries)
-	fmt.Printf("  Worker Timeout:  %v\n", cfg.Workers.DefaultTimeout)
+	p := output.NewPrinter(output.ModePlain, false)
+	p.Section(fmt.Sprintf("Configuration (%s)", configPath))
+	p.KeyValue([][]string{
+		{"Project Dir", cfg.ProjectDir},
+		{"Hive Dir", cfg.HiveDir},
+		{"Queen Model", fmt.Sprintf("%s (%s)", cfg.Queen.Model, cfg.Queen.Provider)},
+		{"Max Workers", fmt.Sprintf("%d", cfg.Workers.MaxParallel)},
+		{"Default Adapter", cfg.Workers.DefaultAdapter},
+		{"Max Retries", fmt.Sprintf("%d", cfg.Workers.MaxRetries)},
+		{"Worker Timeout", fmt.Sprintf("%v", cfg.Workers.DefaultTimeout)},
+	})
 	if len(cfg.Workers.AdapterMap) > 0 {
 		fmt.Printf("  Adapter Map:\n")
 		for taskType, adapterName := range cfg.Workers.AdapterMap {
@@ -354,20 +357,26 @@ func runPlain(ctx context.Context, cmd *cli.Command, cfg *config.Config, objecti
 		logger.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	}
 
-	// Suppress banner in quiet mode
-	if !quiet {
-		fmt.Println("")
-		fmt.Println("══════════════════════════════════════════════════")
-		fmt.Println("  Waggle - Agent Orchestration System")
-		fmt.Println("══════════════════════════════════════════════════")
-		fmt.Printf("  Objective: %s\n", objective)
-		fmt.Printf("  Adapter:   %s\n", cfg.Workers.DefaultAdapter)
-		fmt.Printf("  Workers:   %d max parallel\n", cfg.Workers.MaxParallel)
-		if cfg.Queen.Provider != "" {
-			fmt.Printf("  Queen LLM: %s (%s)\n", cfg.Queen.Provider, cfg.Queen.Model)
-		}
-		fmt.Println("")
+	// Create styled printer for plain mode
+	mode := output.ModePlain
+	if quiet {
+		mode = output.ModeQuiet
 	}
+	p := output.NewPrinter(mode, verbose)
+
+	// Print banner
+	p.Header("Waggle \u2014 Agent Orchestration")
+	p.KeyValue([][]string{
+		{"Objective", objective},
+		{"Adapter", cfg.Workers.DefaultAdapter},
+		{"Workers", fmt.Sprintf("%d max parallel", cfg.Workers.MaxParallel)},
+	})
+	if cfg.Queen.Provider != "" {
+		p.KeyValue([][]string{
+			{"Queen LLM", fmt.Sprintf("%s (%s)", cfg.Queen.Provider, cfg.Queen.Model)},
+		})
+	}
+	p.Println("")
 
 	q, err := queen.New(cfg, logger)
 	if err != nil {
@@ -375,7 +384,8 @@ func runPlain(ctx context.Context, cmd *cli.Command, cfg *config.Config, objecti
 	}
 	defer q.Close()
 
-	// Propagate quiet flag to Queen
+	// Wire printer and quiet mode
+	q.SetPrinter(p)
 	q.SetQuiet(quiet)
 
 	if tasksFile != "" {
@@ -384,9 +394,7 @@ func runPlain(ctx context.Context, cmd *cli.Command, cfg *config.Config, objecti
 			return fmt.Errorf("load tasks file: %w", err)
 		}
 		q.SetTasks(tasks)
-		if !quiet {
-			logger.Printf("Loaded %d tasks from %s", len(tasks), tasksFile)
-		}
+		p.Info("Loaded %d tasks from %s", len(tasks), tasksFile)
 	}
 
 	runCtx, cancel := context.WithCancel(ctx)
@@ -397,33 +405,25 @@ func runPlain(ctx context.Context, cmd *cli.Command, cfg *config.Config, objecti
 	defer signal.Stop(sigs)
 	go func() {
 		<-sigs
-		logger.Println("\nReceived shutdown signal, gracefully stopping...")
+		p.Warning("Received shutdown signal, gracefully stopping...")
 		cancel()
 	}()
 
 	var runErr error
 	if !forceLegacy && q.SupportsAgentMode() {
-		if !quiet {
-			logger.Println("✓ Agent mode: Queen will use tools autonomously")
-		}
+		p.Success("Agent mode: Queen will use tools autonomously")
 		runErr = q.RunAgent(runCtx, objective)
 	} else {
 		if forceLegacy {
-			if !quiet {
-				logger.Println("⚙ Legacy mode (--legacy flag)")
-			}
+			p.Info("Legacy mode (--legacy flag)")
 		} else {
 			provider := cfg.Queen.Provider
 			if provider == "" {
-				if !quiet {
-					logger.Println("⚙ Legacy mode (no queen.provider configured)")
-					logger.Println("  💡 Set queen.provider to \"anthropic\" in waggle.json for agent mode")
-				}
+				p.Info("Legacy mode (no queen.provider configured)")
+				p.Info("Set queen.provider to \"anthropic\" in waggle.json for agent mode")
 			} else {
-				if !quiet {
-					logger.Printf("⚙ Legacy mode (provider %q is CLI-based, no tool support)", provider)
-					logger.Println("  💡 For agent mode, set queen.provider to \"anthropic\" (requires ANTHROPIC_API_KEY)")
-				}
+				p.Info("Legacy mode (provider %q is CLI-based, no tool support)", provider)
+				p.Info("For agent mode, set queen.provider to \"anthropic\" (requires ANTHROPIC_API_KEY)")
 			}
 		}
 		runErr = q.Run(runCtx, objective)
@@ -432,12 +432,8 @@ func runPlain(ctx context.Context, cmd *cli.Command, cfg *config.Config, objecti
 		return fmt.Errorf("queen failed: %w", runErr)
 	}
 
-	if !quiet {
-		fmt.Println("")
-		fmt.Println("══════════════════════════════════════════════════")
-		fmt.Println("  Mission Complete")
-		fmt.Println("══════════════════════════════════════════════════")
-	}
+	p.Println("")
+	p.Header("Mission Complete")
 	return nil
 }
 
@@ -700,25 +696,25 @@ func runResumePlain(ctx context.Context, cmd *cli.Command, cfg *config.Config, s
 	quiet := cmd.Bool("quiet")
 	logger := log.New(os.Stderr, "", log.LstdFlags)
 
-	logger.Printf("Resuming session: %s", sessionID)
-	logger.Printf("   Objective: %s", objective)
-
 	if verbose {
 		logger.SetFlags(log.LstdFlags | log.Lmicroseconds)
 	}
 
-	if !quiet {
-		fmt.Println("")
-		fmt.Println("══════════════════════════════════════════════════")
-		fmt.Println("  Waggle - Agent Orchestration System")
-		fmt.Println("  Resuming Interrupted Session")
-		fmt.Println("══════════════════════════════════════════════════")
-		fmt.Printf("  Session ID: %s\n", sessionID)
-		fmt.Printf("  Objective:  %s\n", objective)
-		fmt.Printf("  Adapter:    %s\n", cfg.Workers.DefaultAdapter)
-		fmt.Printf("  Workers:    %d max parallel\n", cfg.Workers.MaxParallel)
-		fmt.Println("")
+	// Create styled printer
+	mode := output.ModePlain
+	if quiet {
+		mode = output.ModeQuiet
 	}
+	p := output.NewPrinter(mode, verbose)
+
+	p.Header("Waggle \u2014 Resuming Session")
+	p.KeyValue([][]string{
+		{"Session", sessionID},
+		{"Objective", objective},
+		{"Adapter", cfg.Workers.DefaultAdapter},
+		{"Workers", fmt.Sprintf("%d max parallel", cfg.Workers.MaxParallel)},
+	})
+	p.Println("")
 
 	// Create queen instance
 	q, err := queen.New(cfg, logger)
@@ -726,6 +722,8 @@ func runResumePlain(ctx context.Context, cmd *cli.Command, cfg *config.Config, s
 		return fmt.Errorf("init queen: %w", err)
 	}
 	defer q.Close()
+
+	q.SetPrinter(p)
 
 	// Resume the session
 	resumedObjective, err := q.ResumeSession(ctx, sessionID)
@@ -746,16 +744,14 @@ func runResumePlain(ctx context.Context, cmd *cli.Command, cfg *config.Config, s
 
 	go func() {
 		<-sigs
-		logger.Println("\nReceived shutdown signal, gracefully stopping...")
+		p.Warning("Received shutdown signal, gracefully stopping...")
 		cancel()
 	}()
 
 	// Run with the resumed session, preferring agent mode
 	var runErr error
 	if !forceLegacy && q.SupportsAgentMode() {
-		if !quiet {
-			logger.Println("✓ Agent mode: resuming with tool-using Queen")
-		}
+		p.Success("Agent mode: resuming with tool-using Queen")
 		runErr = q.RunAgentResume(runCtx, sessionID)
 	} else {
 		runErr = q.Run(runCtx, objective)
@@ -764,12 +760,8 @@ func runResumePlain(ctx context.Context, cmd *cli.Command, cfg *config.Config, s
 		return fmt.Errorf("queen failed: %w", runErr)
 	}
 
-	if !quiet {
-		fmt.Println("")
-		fmt.Println("══════════════════════════════════════════════════")
-		fmt.Println("  Mission Complete")
-		fmt.Println("══════════════════════════════════════════════════")
-	}
+	p.Println("")
+	p.Header("Mission Complete")
 	return nil
 }
 
@@ -808,6 +800,6 @@ func cmdKill(ctx context.Context, cmd *cli.Command) error {
 		return fmt.Errorf("stop session: %w", err)
 	}
 
-	fmt.Printf("Session %s stopped\n", sessionID)
+	output.NewPrinter(output.ModePlain, false).Success("Session %s stopped", sessionID)
 	return nil
 }

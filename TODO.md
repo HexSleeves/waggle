@@ -70,14 +70,15 @@
 - [x] **Binary releases** — GoReleaser + GH Actions for linux/mac/arm64/windows
 - [x] **Mixed adapters per task type** — `adapter_map` routes task types to specific adapters
 - [x] **`--dry-run` flag** — Shows planned task graph without executing workers
-- [ ] **Progress bar / ETA in TUI** — `[3/5 tasks, ~2 min remaining]`
-- [ ] **Task dependency DAG visualization** — TUI or `dot` export
-- [ ] **Review Rejection Integration Test** — test reject→re-queue→re-execute cycle
+- [x] **pterm output migration** — Replaced all fmt.Printf/box-drawing with pterm styled output (tables, headers, sections, bullet lists, key-value pairs); `internal/output/printer.go` wraps pterm behind mode-aware interface
+- [x] **Progress bar / ETA in TUI** — `[3/5 ██████░░░░ 60%] ~2m remaining` in status bar + task panel
+- [x] **Task dependency DAG visualization** — `waggle dag` (DOT) / `waggle dag --ascii` + TUI `d` key toggle
+- [x] **Review Rejection Integration Test** — `TestRejectRequeueReexecute_E2E` + `TestRejectExhaustsRetries_E2E`
 
-## Architectural Debt
+## Architectural Debt ✅ RESOLVED
 
-- Legacy mode uses the worker adapter for planning (spawns a "planner" worker). Agent mode avoids this.
-- Blackboard is in-memory + persisted. On resume, in-memory starts empty.
+- [x] Legacy mode planner uses Queen's LLM directly via `planWithLLM()`, falls back to worker only if unavailable
+- [x] Blackboard restored on resume via `DB.LoadBlackboard()` → `board.Post()` in `ResumeSession()`
 
 ## VM Notes
 

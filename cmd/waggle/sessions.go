@@ -6,8 +6,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"strings"
 
+	"github.com/HexSleeves/waggle/internal/output"
 	"github.com/HexSleeves/waggle/internal/state"
 	"github.com/urfave/cli/v3"
 )
@@ -36,31 +36,43 @@ func cmdSessions(ctx context.Context, cmd *cli.Command) error {
 		return enc.Encode(sessions)
 	}
 
+	p := output.NewPrinter(output.ModePlain, false)
+
 	if len(sessions) == 0 {
 		if onlyRunning {
-			fmt.Println("No running sessions.")
+			p.Info("No running sessions.")
 		} else {
-			fmt.Println("No sessions found. Run 'waggle run <objective>' to start one.")
+			p.Info("No sessions found. Run 'waggle run <objective>' to start one.")
 		}
 		return nil
 	}
 
-	fmt.Printf("%-20s %-10s %-6s %-6s %-6s  %s\n", "SESSION", "STATUS", "DONE", "FAIL", "PEND", "OBJECTIVE")
-	fmt.Println(strings.Repeat("─", 80))
+	p.Header("Sessions")
+
+	var rows [][]string
 	for _, s := range sessions {
 		obj := s.Objective
 		if len(obj) > 40 {
 			obj = obj[:37] + "..."
 		}
-		sid := s.ID
 		status := s.Status
 		if s.Status != "done" && s.Status != "cancelled" {
-			status = "● " + s.Status
+			status = output.StatusIcon(s.Status) + " " + s.Status
 		}
-		fmt.Printf("%-20s %-10s %-6d %-6d %-6d  %s\n",
-			sid, status, s.CompletedTasks, s.FailedTasks, s.PendingTasks, obj)
+		rows = append(rows, []string{
+			s.ID,
+			status,
+			fmt.Sprintf("%d", s.CompletedTasks),
+			fmt.Sprintf("%d", s.FailedTasks),
+			fmt.Sprintf("%d", s.PendingTasks),
+			obj,
+		})
 	}
-	fmt.Printf("\n%d session(s)\n", len(sessions))
+	p.Table(
+		[]string{"Session", "Status", "Done", "Fail", "Pend", "Objective"},
+		rows,
+	)
+	p.Printf("\n%d session(s)\n", len(sessions))
 	return nil
 }
 

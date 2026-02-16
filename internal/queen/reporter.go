@@ -6,6 +6,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/HexSleeves/waggle/internal/output"
 	"github.com/HexSleeves/waggle/internal/task"
 )
 
@@ -48,11 +49,9 @@ func (q *Queen) printReport() {
 		return
 	}
 
-	fmt.Println("")
-	fmt.Println("╔══════════════════════════════════════════════════╗")
-	fmt.Println("║            📋 FINAL REPORT                      ║")
-	fmt.Println("╚══════════════════════════════════════════════════╝")
-	fmt.Printf("\n  Objective: %s\n", q.objective)
+	p := output.NewPrinter(output.ModePlain, false)
+
+	p.Header("Final Report")
 
 	completed := 0
 	failed := 0
@@ -63,40 +62,47 @@ func (q *Queen) printReport() {
 			failed++
 		}
 	}
-	fmt.Printf("  Tasks: %d completed, %d failed, %d total\n", completed, failed, len(results))
+
+	p.KeyValue([][]string{
+		{"Objective", q.objective},
+	})
+	p.Println("")
+
+	p.Table(
+		[]string{"Metric", "Count"},
+		[][]string{
+			{"Completed", fmt.Sprintf("%d", completed)},
+			{"Failed", fmt.Sprintf("%d", failed)},
+			{"Total", fmt.Sprintf("%d", len(results))},
+		},
+	)
+	p.Println("")
 
 	for _, r := range results {
-		icon := "⏳"
-		switch r.Status {
-		case task.StatusComplete:
-			icon = "✅"
-		case task.StatusFailed:
-			icon = "❌"
-		}
-
-		fmt.Printf("\n  %s [%s] %s\n", icon, r.Type, r.Title)
-		fmt.Println("  " + strings.Repeat("─", 48))
+		icon := output.StatusIcon(string(r.Status))
+		p.Section(fmt.Sprintf("%s [%s] %s", icon, r.Type, r.Title))
 
 		if r.Result != nil && r.Result.Output != "" {
 			for _, line := range strings.Split(strings.TrimSpace(r.Result.Output), "\n") {
-				fmt.Printf("  %s\n", line)
+				p.Printf("  %s\n", line)
 			}
 		} else if r.Result != nil && len(r.Result.Errors) > 0 {
 			for _, e := range r.Result.Errors {
 				if e != "" {
-					fmt.Printf("  ERROR: %s\n", e)
+					p.Error("%s", e)
 				}
 			}
 		} else {
-			fmt.Println("  (no output)")
+			p.Printf("  (no output)\n")
 		}
 	}
 
-	fmt.Println("")
-	fmt.Println("  " + strings.Repeat("═", 48))
-	fmt.Printf("  Session: %s\n", q.sessionID)
-	fmt.Printf("  Log: .hive/hive.db\n")
-	fmt.Println("")
+	p.Divider()
+	p.KeyValue([][]string{
+		{"Session", q.sessionID},
+		{"Log", ".hive/hive.db"},
+	})
+	p.Println("")
 }
 
 // --- Utility helpers ---

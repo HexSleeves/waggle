@@ -170,16 +170,13 @@ type toolTiming struct {
 func (q *Queen) RunAgent(ctx context.Context, objective string) error {
 	toolClient, ok := q.llm.(llm.ToolClient)
 	if !ok {
-		if !q.quiet {
-			q.logger.Println("⚠ LLM provider does not support tool use, falling back to legacy loop")
-		}
+		q.Printer().Warning("LLM provider does not support tool use, falling back to legacy loop")
 		return q.Run(ctx, objective)
 	}
 
 	q.setObjective(objective)
-	if !q.quiet {
-		q.logger.Printf("🐝 Waggle Agent Mode | Objective: %s", objective)
-	}
+	q.Printer().Header("Waggle Agent Mode")
+	q.Printer().Info("Objective: %s", objective)
 
 	// Preflight: verify and configure adapters
 	if err := q.setupAdapters(ctx); err != nil {
@@ -189,9 +186,7 @@ func (q *Queen) RunAgent(ctx context.Context, objective string) error {
 	// Create DB session
 	q.sessionID = newSessionID()
 	if err := q.db.CreateSession(ctx, q.sessionID, objective); err != nil {
-		if !q.quiet {
-			q.logger.Printf("⚠ DB: failed to create session: %v", err)
-		}
+		q.logger.Printf("⚠ DB: failed to create session: %v", err)
 	}
 
 	// Build initial conversation
@@ -218,17 +213,13 @@ func (q *Queen) RunAgent(ctx context.Context, objective string) error {
 	for turn := 0; turn < maxTurns; turn++ {
 		select {
 		case <-ctx.Done():
-			if !q.quiet {
-				q.logger.Println("⛔ Context cancelled, shutting down")
-			}
+			q.Printer().Warning("Context cancelled, shutting down")
 			q.pool.KillAll()
 			return ctx.Err()
 		default:
 		}
 
-		if !q.quiet {
-			q.logger.Printf("\n━━━ Agent Turn %d/%d ━━━", turn+1, maxTurns)
-		}
+		q.Printer().Section(fmt.Sprintf("Agent Turn %d/%d", turn+1, maxTurns))
 
 		// Repair history before sending to LLM
 		messages = repairToolHistory(messages)
@@ -247,15 +238,11 @@ func (q *Queen) RunAgent(ctx context.Context, objective string) error {
 		totalUsage.OutputTokens += resp.Usage.OutputTokens
 		totalUsage.CacheCreationTokens += resp.Usage.CacheCreationTokens
 		totalUsage.CacheReadTokens += resp.Usage.CacheReadTokens
-		if !q.quiet {
-			q.logger.Printf("  📊 Tokens: %d in / %d out", resp.Usage.InputTokens, resp.Usage.OutputTokens)
-		}
+		q.Printer().Debug("Tokens: %d in / %d out", resp.Usage.InputTokens, resp.Usage.OutputTokens)
 
 		// Handle max_tokens truncation: do NOT append the truncated response
 		if resp.StopReason == "max_tokens" {
-			if !q.quiet {
-				q.logger.Println("⚠ LLM response truncated (max_tokens), requesting retry")
-			}
+			q.Printer().Warning("LLM response truncated (max_tokens), requesting retry")
 			messages = append(messages, llm.ToolMessage{
 				Role: "user",
 				Content: []llm.ContentBlock{{
@@ -276,7 +263,7 @@ func (q *Queen) RunAgent(ctx context.Context, objective string) error {
 		for _, block := range resp.Content {
 			if block.Type == "text" && block.Text != "" {
 				if !q.quiet {
-					q.logger.Printf("👑 Queen: %s", block.Text)
+					q.Printer().Info("Queen: %s", block.Text)
 				}
 			}
 		}
@@ -288,7 +275,7 @@ func (q *Queen) RunAgent(ctx context.Context, objective string) error {
 		// If no tool calls, the Queen is done talking
 		if resp.StopReason == "end_turn" {
 			if !q.quiet {
-				q.logger.Println("👑 Queen ended conversation without calling complete()")
+				q.Printer().Warning("Queen ended conversation without calling complete()")
 			}
 			if err := q.db.UpdateSessionStatus(ctx, q.sessionID, "done"); err != nil {
 				q.logger.Printf("⚠ Warning: failed to update session status: %v", err)
@@ -315,7 +302,7 @@ func (q *Queen) RunAgent(ctx context.Context, objective string) error {
 			toolDuration := time.Since(toolStart)
 
 			if !q.quiet {
-				q.logger.Printf("  🔧 Tool: %s (%s)", tc.Name, toolDuration.Round(time.Millisecond))
+				q.Printer().Debug("Tool: %s (%s)", tc.Name, toolDuration.Round(time.Millisecond))
 			}
 
 			if tt, ok := toolTimings[tc.Name]; ok {
@@ -330,7 +317,7 @@ func (q *Queen) RunAgent(ctx context.Context, objective string) error {
 			if isError {
 				content = toolErr.Error()
 				if !q.quiet {
-					q.logger.Printf("  ⚠ Tool error: %s", content)
+					q.Printer().Warning("Tool error: %s", content)
 				}
 			} else {
 				content = result.LLMContent
@@ -340,7 +327,7 @@ func (q *Queen) RunAgent(ctx context.Context, objective string) error {
 					preview = preview[:200] + "..."
 				}
 				if !q.quiet {
-					q.logger.Printf("  ✓ Result: %s", preview)
+					q.Printer().Debug("Result: %s", preview)
 				}
 			}
 
@@ -374,7 +361,7 @@ func (q *Queen) RunAgent(ctx context.Context, objective string) error {
 		// Handle terminal tools
 		if completed {
 			if !q.quiet {
-				q.logger.Println("✅ Queen declared objective complete!")
+				q.Printer().Success("Queen declared objective complete!")
 			}
 			if err := q.db.UpdateSessionStatus(ctx, q.sessionID, "done"); err != nil {
 				q.logger.Printf("⚠ Warning: failed to update session status: %v", err)
@@ -385,7 +372,7 @@ func (q *Queen) RunAgent(ctx context.Context, objective string) error {
 		}
 		if failReason != "" {
 			if !q.quiet {
-				q.logger.Printf("❌ Queen declared failure: %s", failReason)
+				q.Printer().Error("Queen declared failure: %s", failReason)
 			}
 			if err := q.db.UpdateSessionStatus(ctx, q.sessionID, "failed"); err != nil {
 				q.logger.Printf("⚠ Warning: failed to update session status: %v", err)
@@ -419,7 +406,7 @@ func (q *Queen) RunAgentResume(ctx context.Context, sessionID string) error {
 	if err != nil || len(messages) == 0 {
 		// Can't restore conversation — just re-run with the same objective
 		if !q.quiet {
-			q.logger.Println("⚠ Could not restore conversation, restarting agent loop")
+			q.Printer().Warning("Could not restore conversation, restarting agent loop")
 		}
 		return q.RunAgent(ctx, objective)
 	}
@@ -430,7 +417,7 @@ func (q *Queen) RunAgentResume(ctx context.Context, sessionID string) error {
 	}
 
 	if !q.quiet {
-		q.logger.Printf("🔄 Resuming agent session %s with %d messages", sessionID, len(messages))
+		q.Printer().Info("Resuming agent session %s with %d messages", sessionID, len(messages))
 	}
 
 	// Inject a status update so the Queen knows where things stand
@@ -476,13 +463,13 @@ func (q *Queen) RunAgentResume(ctx context.Context, sessionID string) error {
 		totalUsage.CacheCreationTokens += resp.Usage.CacheCreationTokens
 		totalUsage.CacheReadTokens += resp.Usage.CacheReadTokens
 		if !q.quiet {
-			q.logger.Printf("  📊 Tokens: %d in / %d out", resp.Usage.InputTokens, resp.Usage.OutputTokens)
+			q.Printer().Debug("Tokens: %d in / %d out", resp.Usage.InputTokens, resp.Usage.OutputTokens)
 		}
 
 		// Handle max_tokens truncation: do NOT append the truncated response
 		if resp.StopReason == "max_tokens" {
 			if !q.quiet {
-				q.logger.Println("⚠ LLM response truncated (max_tokens), requesting retry")
+				q.Printer().Warning("LLM response truncated (max_tokens), requesting retry")
 			}
 			messages = append(messages, llm.ToolMessage{
 				Role: "user",
@@ -502,7 +489,7 @@ func (q *Queen) RunAgentResume(ctx context.Context, sessionID string) error {
 		for _, block := range resp.Content {
 			if block.Type == "text" && block.Text != "" {
 				if !q.quiet {
-					q.logger.Printf("👑 Queen: %s", block.Text)
+					q.Printer().Info("Queen: %s", block.Text)
 				}
 			}
 		}
@@ -531,7 +518,7 @@ func (q *Queen) RunAgentResume(ctx context.Context, sessionID string) error {
 			toolDuration := time.Since(toolStart)
 
 			if !q.quiet {
-				q.logger.Printf("  🔧 Tool: %s (%s)", block.ToolCall.Name, toolDuration.Round(time.Millisecond))
+				q.Printer().Debug("Tool: %s (%s)", block.ToolCall.Name, toolDuration.Round(time.Millisecond))
 			}
 
 			if tt, ok := toolTimings[block.ToolCall.Name]; ok {
@@ -772,7 +759,7 @@ func (q *Queen) compactMessages(messages []llm.ToolMessage) []llm.ToolMessage {
 	}
 
 	if !q.quiet {
-		q.logger.Printf("📦 Compacted conversation: %d → %d messages", len(messages), len(compacted))
+		q.Printer().Info("Compacted conversation: %d → %d messages", len(messages), len(compacted))
 	}
 	return compacted
 }
@@ -793,16 +780,16 @@ func (q *Queen) logRunSummary(totalUsage llm.Usage, toolTimings map[string]*tool
 		return
 	}
 	if totalUsage.InputTokens > 0 || totalUsage.OutputTokens > 0 {
-		q.logger.Printf("📊 Total tokens: %dk in / %dk out", totalUsage.InputTokens/1000, totalUsage.OutputTokens/1000)
+		q.Printer().Info("Total tokens: %dk in / %dk out", totalUsage.InputTokens/1000, totalUsage.OutputTokens/1000)
 		if totalUsage.CacheReadTokens > 0 {
-			q.logger.Printf("   Cache: %dk created / %dk read", totalUsage.CacheCreationTokens/1000, totalUsage.CacheReadTokens/1000)
+			q.Printer().Debug("Cache: %dk created / %dk read", totalUsage.CacheCreationTokens/1000, totalUsage.CacheReadTokens/1000)
 		}
 	}
 	if len(toolTimings) > 0 {
-		q.logger.Println("⏱️ Tool timing summary:")
+		q.Printer().Section("Tool Timing Summary")
 		for name, tt := range toolTimings {
 			avg := tt.totalDur / time.Duration(tt.calls)
-			q.logger.Printf("   %s: %d calls, avg %s, total %s", name, tt.calls, avg.Round(time.Millisecond), tt.totalDur.Round(time.Millisecond))
+			q.Printer().Debug("%s: %d calls, avg %s, total %s", name, tt.calls, avg.Round(time.Millisecond), tt.totalDur.Round(time.Millisecond))
 		}
 	}
 }

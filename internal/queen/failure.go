@@ -31,7 +31,7 @@ func (q *Queen) handleTaskFailure(ctx context.Context, taskID, workerID string, 
 		q.logger.Printf("  ⚠ Warning: failed to update task error type: %v", err)
 	}
 
-	q.logVerbose("  ❌ Task %s failed (%s): %s", taskID, errType, truncate(errMsg, 200))
+	q.Printer().Error("Task %s failed (%s): %s", taskID, errType, truncate(errMsg, 200))
 
 	// Check if error is retryable
 	isRetryable := errors.IsRetryable(fmt.Errorf("%s", errMsg))
@@ -58,10 +58,10 @@ func (q *Queen) handleTaskFailure(ctx context.Context, taskID, workerID string, 
 		// Apply backoff: set RetryAfter so Ready() skips this task until the delay elapses
 		t.SetRetryAfter(time.Now().Add(backoffDelay))
 
-		q.logVerbose("  🔄 Retrying task %s (attempt %d/%d) after %v backoff", taskID, newCount, t.MaxRetries, backoffDelay)
+		q.Printer().Info("Retrying task %s (attempt %d/%d) after %v backoff", taskID, newCount, t.MaxRetries, backoffDelay)
 	} else if !isRetryable {
 		// Permanent error - fail immediately without wasting retries
-		q.logVerbose("  💀 Task %s has permanent error, failing immediately", taskID)
+		q.Printer().Error("Task %s has permanent error, failing immediately", taskID)
 		if err := q.tasks.UpdateStatus(taskID, task.StatusFailed); err != nil {
 			q.logger.Printf("  ⚠ Warning: failed to update task status: %v", err)
 		}

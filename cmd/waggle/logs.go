@@ -9,7 +9,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/HexSleeves/waggle/internal/output"
 	"github.com/HexSleeves/waggle/internal/state"
+	"github.com/pterm/pterm"
 	"github.com/urfave/cli/v3"
 )
 
@@ -57,9 +59,11 @@ func cmdLogs(ctx context.Context, cmd *cli.Command) error {
 		return enc.Encode(events)
 	}
 
+	p := output.NewPrinter(output.ModePlain, false)
+
 	// Print events
 	for _, e := range events {
-		printEvent(e)
+		printEvent(p, e)
 	}
 
 	// Follow mode: poll for new events
@@ -78,7 +82,7 @@ func cmdLogs(ctx context.Context, cmd *cli.Command) error {
 					continue
 				}
 				for _, e := range newEvents {
-					printEvent(e)
+					printEvent(p, e)
 					lastID = e.ID
 				}
 			}
@@ -88,48 +92,27 @@ func cmdLogs(ctx context.Context, cmd *cli.Command) error {
 	return nil
 }
 
-func printEvent(e state.EventRow) {
+func printEvent(p *output.Printer, e state.EventRow) {
 	// Parse timestamp for display
 	ts := e.CreatedAt
 	if t, err := time.Parse(time.RFC3339Nano, ts); err == nil {
 		ts = t.Format("15:04:05.000")
 	}
 
-	// Format event type with emoji
-	icon := eventIcon(e.Type)
-
 	// Extract useful info from data JSON
 	detail := summarizeEventData(e.Type, e.Data)
 
-	fmt.Printf("%s %s %s %s\n", ts, icon, e.Type, detail)
-}
-
-func eventIcon(eventType string) string {
-	switch eventType {
-	case "task.created":
-		return "📋"
-	case "task.status_changed":
-		return "🔄"
-	case "task.assigned":
-		return "🐝"
-	case "worker.spawned":
-		return "🚀"
-	case "worker.completed":
-		return "✅"
-	case "worker.failed":
-		return "❌"
-	case "worker.output":
-		return "📝"
-	case "blackboard.update":
-		return "📌"
-	case "queen.decision":
-		return "👑"
-	case "queen.plan":
-		return "📐"
-	case "system.error":
-		return "⚠️"
+	// Route to appropriate printer method based on event type
+	line := fmt.Sprintf("%s  %s  %s", pterm.Gray(ts), e.Type, detail)
+	switch {
+	case strings.HasSuffix(e.Type, ".failed") || e.Type == "system.error":
+		p.Error("%s", line)
+	case strings.HasSuffix(e.Type, ".completed"):
+		p.Success("%s", line)
+	case strings.HasPrefix(e.Type, "queen."):
+		p.Info("%s", line)
 	default:
-		return "•"
+		p.Printf("%s\n", line)
 	}
 }
 
@@ -156,7 +139,7 @@ func summarizeEventData(eventType, data string) string {
 	if eventType == "task.status_changed" {
 		if payload, ok := m["payload"].(map[string]interface{}); ok {
 			if newStatus, ok := payload["new"].(string); ok {
-				parts = append(parts, fmt.Sprintf("→ %s", newStatus))
+				parts = append(parts, fmt.Sprintf("\u2192 %s", newStatus))
 			}
 		}
 	}

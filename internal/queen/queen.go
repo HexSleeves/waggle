@@ -17,6 +17,7 @@ import (
 	"github.com/HexSleeves/waggle/internal/compact"
 	"github.com/HexSleeves/waggle/internal/config"
 	"github.com/HexSleeves/waggle/internal/llm"
+	"github.com/HexSleeves/waggle/internal/output"
 	"github.com/HexSleeves/waggle/internal/safety"
 	"github.com/HexSleeves/waggle/internal/state"
 	"github.com/HexSleeves/waggle/internal/task"
@@ -59,6 +60,8 @@ type Queen struct {
 
 	llm   llm.Client    // LLM client for AI-backed review/replan (nil = disabled)
 	guard *safety.Guard // shared safety guard for tool calls
+
+	printer *output.Printer // styled output (nil-safe: falls back to logger)
 
 	suppressReport bool // TUI mode: don't print report to stdout
 	quiet          bool // Quiet mode: only print completions/failures
@@ -120,12 +123,35 @@ func (q *Queen) ResumeSession(ctx context.Context, sessionID string) (string, er
 	for _, tr := range taskRows {
 		t := taskFromRow(&tr)
 		q.tasks.Add(t)
-		q.logger.Printf("  📋 Restored task: [%s] %s (%s)", t.Type, t.Title, t.Status)
+		q.Printer().Debug("Restored task: [%s] %s (%s)", t.Type, t.Title, t.Status)
 	}
 
-	q.logger.Printf("🔄 Resumed session %s with %d tasks", sessionID, len(taskRows))
-	q.logger.Printf("   Objective: %s", q.objective)
-	q.logger.Printf("   Phase: %s | Iteration: %d", q.phase, q.iteration)
+	// Restore blackboard entries
+	bbRows, err := q.db.LoadBlackboard(ctx, sessionID)
+	if err != nil {
+		q.logger.Printf("⚠ Warning: failed to load blackboard: %v", err)
+	} else {
+		for _, row := range bbRows {
+			var tags []string
+			if row.Tags != "" {
+				tags = strings.Split(row.Tags, ",")
+			}
+			q.board.Post(&blackboard.Entry{
+				Key:      row.Key,
+				Value:    row.Value,
+				PostedBy: row.PostedBy,
+				TaskID:   row.TaskID,
+				Tags:     tags,
+			})
+		}
+		if len(bbRows) > 0 {
+			q.Printer().Debug("Restored %d blackboard entries", len(bbRows))
+		}
+	}
+
+	q.Printer().Info("Resumed session %s with %d tasks", sessionID, len(taskRows))
+	q.Printer().Info("Objective: %s", q.objective)
+	q.Printer().Info("Phase: %s | Iteration: %d", q.phase, q.iteration)
 
 	return q.objective, nil
 }
@@ -387,7 +413,7 @@ func (q *Queen) setupAdapters(ctx context.Context) error {
 	allTypes := []task.Type{task.TypeCode, task.TypeResearch, task.TypeTest, task.TypeReview, task.TypeGeneric}
 	if a, ok := q.registry.Get(defaultAdapter); !ok || !a.Available() {
 		if !q.quiet {
-			q.logger.Printf("⚠ Default adapter %q not available, falling back to: %s", defaultAdapter, available[0])
+			q.Printer().Warning("Default adapter %q not available, falling back to: %s", defaultAdapter, available[0])
 		}
 		for _, tt := range allTypes {
 			q.router.SetRoute(tt, available[0])
@@ -406,7 +432,7 @@ func (q *Queen) setupAdapters(ctx context.Context) error {
 		}
 	}
 	if !q.quiet {
-		q.logger.Printf("✓ Using adapter: %s | Available: %v", defaultAdapter, displayAdapters)
+		q.Printer().Info("Using adapter: %s | Available: %v", defaultAdapter, displayAdapters)
 	}
 
 	// Health check: verify the adapter actually works
@@ -415,7 +441,7 @@ func (q *Queen) setupAdapters(ctx context.Context) error {
 			return fmt.Errorf("adapter health check failed: %w", err)
 		}
 		if !q.quiet {
-			q.logger.Printf("✓ Adapter health check passed")
+			q.Printer().Success("Adapter health check passed")
 		}
 	}
 
@@ -425,7 +451,8 @@ func (q *Queen) setupAdapters(ctx context.Context) error {
 // Run executes the Queen's main loop: Plan -> Delegate -> Monitor -> Review
 func (q *Queen) Run(ctx context.Context, objective string) error {
 	q.setObjective(objective)
-	q.logger.Printf("🐝 Waggle starting | Objective: %s", objective)
+	q.Printer().Header("Waggle \u2014 Legacy Mode")
+	q.Printer().Info("Objective: %s", objective)
 
 	// Preflight: verify and configure adapters
 	if err := q.setupAdapters(ctx); err != nil {
@@ -442,7 +469,7 @@ func (q *Queen) Run(ctx context.Context, objective string) error {
 		q.setIteration(i)
 		select {
 		case <-ctx.Done():
-			q.logger.Println("⛔ Context cancelled, shutting down")
+			q.Printer().Warning("Context cancelled, shutting down")
 			q.pool.KillAll()
 			return ctx.Err()
 		default:
@@ -452,12 +479,12 @@ func (q *Queen) Run(ctx context.Context, objective string) error {
 		curPhase := q.phase
 		curIter := q.iteration
 		q.mu.RUnlock()
-		q.logVerbose("\n━━━ Iteration %d | Phase: %s ━━━", curIter+1, curPhase)
+		q.Printer().Section(fmt.Sprintf("Iteration %d | Phase: %s", curIter+1, curPhase))
 
 		switch curPhase {
 		case PhasePlan:
 			if err := q.plan(ctx); err != nil {
-				q.logger.Printf("❌ Plan failed: %v", err)
+				q.Printer().Error("Plan failed: %v", err)
 				q.lastErr = err
 				q.setPhase(PhaseFailed)
 				q.savePhase()
@@ -468,7 +495,7 @@ func (q *Queen) Run(ctx context.Context, objective string) error {
 
 		case PhaseDelegate:
 			if err := q.delegate(ctx); err != nil {
-				q.logger.Printf("❌ Delegate failed: %v", err)
+				q.Printer().Error("Delegate failed: %v", err)
 				q.setPhase(PhaseFailed)
 				q.savePhase()
 				continue
@@ -478,7 +505,7 @@ func (q *Queen) Run(ctx context.Context, objective string) error {
 
 		case PhaseMonitor:
 			if err := q.monitor(ctx); err != nil {
-				q.logger.Printf("❌ Monitor failed: %v", err)
+				q.Printer().Error("Monitor failed: %v", err)
 				q.setPhase(PhaseFailed)
 				q.savePhase()
 				continue
@@ -489,7 +516,7 @@ func (q *Queen) Run(ctx context.Context, objective string) error {
 		case PhaseReview:
 			done, err := q.review(ctx)
 			if err != nil {
-				q.logger.Printf("❌ Review failed: %v", err)
+				q.Printer().Error("Review failed: %v", err)
 				q.setPhase(PhaseFailed)
 				q.savePhase()
 				continue
@@ -505,7 +532,7 @@ func (q *Queen) Run(ctx context.Context, objective string) error {
 			q.savePhase()
 
 		case PhaseDone:
-			q.logger.Println("✅ All tasks complete!")
+			q.Printer().Success("All tasks complete!")
 			if err := q.db.UpdateSessionStatus(ctx, q.sessionID, "done"); err != nil {
 				q.logger.Printf("⚠ Warning: failed to update session status: %v", err)
 			}
@@ -518,7 +545,7 @@ func (q *Queen) Run(ctx context.Context, objective string) error {
 
 		// Compact context if needed
 		if q.ctx.NeedsCompaction() {
-			q.logVerbose("📦 Compacting context...")
+			q.Printer().Debug("Compacting context...")
 			err := q.ctx.Compact(compact.DefaultSummarizer)
 			if err != nil {
 				q.logger.Printf("⚠ Warning: failed to compact context: %v", err)
@@ -534,7 +561,7 @@ func (q *Queen) Run(ctx context.Context, objective string) error {
 
 // review examines completed work, handles failures
 func (q *Queen) review(ctx context.Context) (bool, error) {
-	q.logVerbose("🔍 Review phase...")
+	q.Printer().Debug("Review phase...")
 
 	// Process results from assignments
 	q.mu.RLock()
@@ -592,18 +619,18 @@ func (q *Queen) review(ctx context.Context) (bool, error) {
 					q.logger.Printf("⚠ Warning: failed to post blackboard entry %s: %v", bbKey, err)
 				}
 
-				q.logVerbose("  ✅ Task %s completed by %s", taskID, workerID)
+				q.Printer().Success("Task %s completed by %s", taskID, workerID)
 
 				// LLM review: evaluate output quality if configured
 				if q.llm != nil && t != nil {
 					verdict, err := q.reviewWithLLM(ctx, taskID, t, result)
 					if err != nil {
-						q.logVerbose("  ⚠ LLM review failed: %v (accepting result)", err)
+						q.Printer().Warning("LLM review failed: %v (accepting result)", err)
 					} else if !verdict.Approved {
-						q.logVerbose("  🔙 LLM rejected task %s: %s", taskID, verdict.Reason)
+						q.Printer().Warning("LLM rejected task %s: %s", taskID, verdict.Reason)
 						if len(verdict.Suggestions) > 0 {
 							for _, s := range verdict.Suggestions {
-								q.logVerbose("     💡 %s", s)
+								q.Printer().Debug("  %s", s)
 							}
 						}
 						// Re-queue with suggestions appended to description
@@ -621,25 +648,25 @@ func (q *Queen) review(ctx context.Context) (bool, error) {
 							if err := q.db.UpdateTaskStatus(ctx, q.sessionID, taskID, "pending"); err != nil {
 								q.logger.Printf("⚠ Warning: failed to update task status: %v", err)
 							}
-							q.logVerbose("  🔄 Re-queued task %s (attempt %d/%d)", taskID, newCount, t.MaxRetries)
+							q.Printer().Info("Re-queued task %s (attempt %d/%d)", taskID, newCount, t.MaxRetries)
 							q.mu.Lock()
 							delete(q.assignments, workerID)
 							q.mu.Unlock()
 							continue
 						}
-						q.logVerbose("  💀 Task %s rejected but max retries reached, accepting", taskID)
+						q.Printer().Warning("Task %s rejected but max retries reached, accepting", taskID)
 					} else {
-						q.logVerbose("  ✓ LLM approved task %s", taskID)
+						q.Printer().Success("LLM approved task %s", taskID)
 					}
 				}
 
 				// Show output immediately so user sees findings in real-time (unless suppressed)
 				if t != nil && result.Output != "" && !q.suppressReport {
-					q.logger.Printf("\n  ┌─ [%s] %s", t.Type, t.Title)
+					q.Printer().Info("[%s] %s", t.Type, t.Title)
 					for _, line := range strings.Split(strings.TrimSpace(result.Output), "\n") {
-						q.logger.Printf("  │ %s", line)
+						q.Printer().Printf("  %s\n", line)
 					}
-					q.logger.Printf("  └─")
+					// end of task output block
 				}
 
 				q.ctx.Add("assistant", fmt.Sprintf("Task %s completed: %s", taskID, truncate(result.Output, 500)))
@@ -670,11 +697,11 @@ func (q *Queen) review(ctx context.Context) (bool, error) {
 		if q.llm != nil {
 			newTasks, err := q.replanWithLLM(ctx)
 			if err != nil {
-				q.logVerbose("  ⚠ LLM replan failed: %v (finishing)", err)
+				q.Printer().Warning("LLM replan failed: %v (finishing)", err)
 			} else if len(newTasks) > 0 {
 				for _, t := range newTasks {
 					q.persistNewTask(ctx, t)
-					q.logVerbose("  📌 New task from replan: [%s] %s", t.Type, t.Title)
+					q.Printer().Info("New task from replan: [%s] %s", t.Type, t.Title)
 				}
 				return false, nil // More work to do
 			}
@@ -685,7 +712,7 @@ func (q *Queen) review(ctx context.Context) (bool, error) {
 	// Check if there are more ready tasks
 	ready := q.tasks.Ready()
 	if len(ready) > 0 {
-		q.logger.Printf("  📋 %d more tasks ready", len(ready))
+		q.Printer().Info("%d more tasks ready", len(ready))
 		return false, nil
 	}
 
@@ -693,7 +720,7 @@ func (q *Queen) review(ctx context.Context) (bool, error) {
 	if q.pool.ActiveCount() == 0 && len(ready) == 0 && !q.tasks.AllComplete() {
 		failed := q.tasks.Failed()
 		if len(failed) > 0 {
-			q.logVerbose("  💀 %d tasks failed with no recovery possible", len(failed))
+			q.Printer().Error("%d tasks failed with no recovery possible", len(failed))
 			return false, fmt.Errorf("%d tasks failed", len(failed))
 		}
 	}
@@ -782,6 +809,20 @@ func (q *Queen) Close() error {
 // SetLogger replaces the Queen's logger (used by TUI to capture output).
 func (q *Queen) SetLogger(logger *log.Logger) {
 	q.logger = logger
+}
+
+// SetPrinter sets the styled output printer.
+func (q *Queen) SetPrinter(p *output.Printer) {
+	q.printer = p
+}
+
+// Printer returns the styled output printer, creating a no-op one if nil.
+func (q *Queen) Printer() *output.Printer {
+	if q.printer == nil {
+		// TUI/JSON/Quiet mode: return a quiet printer (all methods are no-ops)
+		return output.NewPrinter(output.ModeQuiet, false)
+	}
+	return q.printer
 }
 
 // SuppressReport prevents printReport from writing to stdout (for TUI mode).
