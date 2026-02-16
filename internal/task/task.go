@@ -40,6 +40,8 @@ const (
 )
 
 type Task struct {
+	mu sync.RWMutex `json:"-"`
+
 	ID            string            `json:"id"`
 	ParentID      string            `json:"parent_id,omitempty"`
 	Type          Type              `json:"type"`
@@ -62,6 +64,115 @@ type Task struct {
 	Timeout       time.Duration     `json:"timeout,omitempty"`
 	RetryAfter    time.Time         `json:"retry_after,omitempty"` // backoff: don't schedule before this time
 	DependsOn     []string          `json:"depends_on,omitempty"`
+}
+
+// SetResult sets the task result (thread-safe).
+func (t *Task) SetResult(r *Result) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.Result = r
+}
+
+// GetResult returns the task result (thread-safe).
+func (t *Task) GetResult() *Result {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.Result
+}
+
+// SetWorkerID sets the assigned worker ID (thread-safe).
+func (t *Task) SetWorkerID(id string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.WorkerID = id
+}
+
+// GetWorkerID returns the assigned worker ID (thread-safe).
+func (t *Task) GetWorkerID() string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.WorkerID
+}
+
+// SetDescription updates the task description (thread-safe).
+func (t *Task) SetDescription(desc string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.Description = desc
+}
+
+// AppendDescription appends text to the description (thread-safe).
+func (t *Task) AppendDescription(text string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.Description += text
+}
+
+// GetDescription returns the task description (thread-safe).
+func (t *Task) GetDescription() string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.Description
+}
+
+// IncrRetryCount increments and returns the new retry count (thread-safe).
+func (t *Task) IncrRetryCount() int {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.RetryCount++
+	return t.RetryCount
+}
+
+// GetRetryCount returns the current retry count (thread-safe).
+func (t *Task) GetRetryCount() int {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.RetryCount
+}
+
+// SetLastError sets the last error info (thread-safe).
+func (t *Task) SetLastError(msg, errType string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.LastError = msg
+	t.LastErrorType = errType
+}
+
+// GetLastError returns the last error message and type (thread-safe).
+func (t *Task) GetLastError() (string, string) {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.LastError, t.LastErrorType
+}
+
+// SetRetryAfter sets the backoff time (thread-safe).
+func (t *Task) SetRetryAfter(after time.Time) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.RetryAfter = after
+}
+
+// SetConstraints replaces the constraints list (thread-safe).
+func (t *Task) SetConstraints(c []string) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.Constraints = c
+}
+
+// GetConstraints returns a copy of the constraints (thread-safe).
+func (t *Task) GetConstraints() []string {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	cp := make([]string, len(t.Constraints))
+	copy(cp, t.Constraints)
+	return cp
+}
+
+// GetStatus returns the current status (thread-safe).
+func (t *Task) GetStatus() Status {
+	t.mu.RLock()
+	defer t.mu.RUnlock()
+	return t.Status
 }
 
 type Result struct {

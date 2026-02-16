@@ -70,7 +70,7 @@ func buildPrompt(t *task.Task) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Task: %s\n", t.Title)
 	fmt.Fprintf(&b, "Type: %s\n", t.Type)
-	fmt.Fprintf(&b, "Description:\n%s\n", t.Description)
+	fmt.Fprintf(&b, "Description:\n%s\n", t.GetDescription())
 
 	if len(t.Context) > 0 {
 		fmt.Fprintf(&b, "\nContext:\n")
@@ -84,9 +84,10 @@ func buildPrompt(t *task.Task) string {
 	}
 
 	// Scope constraints — tell the worker what NOT to do
-	if len(t.Constraints) > 0 {
+	constraints := t.GetConstraints()
+	if len(constraints) > 0 {
 		fmt.Fprintf(&b, "\n--- SCOPE CONSTRAINTS (you MUST follow these) ---\n")
-		for _, c := range t.Constraints {
+		for _, c := range constraints {
 			fmt.Fprintf(&b, "• %s\n", c)
 		}
 		fmt.Fprintf(&b, "--- END CONSTRAINTS ---\n")

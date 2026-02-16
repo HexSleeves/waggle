@@ -186,7 +186,7 @@ func runInteractiveTUI(ctx context.Context, cfg *config.Config, tasksFile string
 func subscribeBusEvents(q *queen.Queen, tuiProg *tui.Program) {
 	q.Bus().Subscribe(bus.MsgTaskCreated, func(msg bus.Message) {
 		if t, ok := msg.Payload.(*task.Task); ok {
-			tuiProg.SendTaskUpdate(t.ID, t.Title, string(t.Type), string(t.Status), "")
+			tuiProg.SendTaskUpdate(t.ID, t.Title, string(t.Type), string(t.GetStatus()), "")
 		}
 	})
 	q.Bus().Subscribe(bus.MsgTaskStatusChanged, func(msg bus.Message) {

@@ -144,18 +144,18 @@ func (w *CLIWorker) Spawn(ctx context.Context, t *task.Task) error {
 		if err := guard.ValidateTaskPaths(t.AllowedPaths); err != nil {
 			return w.failSafety("safety check failed: %v", err)
 		}
-		if err := guard.CheckCommand(t.Description); err != nil {
+		if err := guard.CheckCommand(t.GetDescription()); err != nil {
 			return w.failSafety("safety check failed: %v", err)
 		}
 		if guard.IsReadOnly() {
-			t.Description = "[SAFETY WARNING: System is in read-only mode]\n\n" + t.Description
+			t.SetDescription("[SAFETY WARNING: System is in read-only mode]\n\n" + t.GetDescription())
 		}
 	}
 
 	// Build command based on prompt mode
 	switch w.adapter.mode {
 	case PromptAsScript:
-		script := t.Description
+		script := t.GetDescription()
 		if cmd, ok := t.Context["command"]; ok {
 			script = cmd
 		}

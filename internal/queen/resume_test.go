@@ -571,82 +571,159 @@ func TestSavePhase(t *testing.T) {
 	t.Logf("✅ Phase saved correctly: %s, iteration %d", phase, iteration)
 }
 
-// TestLoadConversation_RestoresTurns persists turns via persistTurn
-// and verifies loadConversation reconstructs them correctly.
+// TestLoadConversation_RestoresTurns verifies that persistConversation/loadConversation
+// roundtrips the full conversation including tool_result messages.
 func TestLoadConversation_RestoresTurns(t *testing.T) {
 	q, _ := testQueen(t)
 	ctx := context.Background()
 
-	// persistTurn saves llm.Response objects keyed by turn number
-	turn0 := &llm.Response{
-		Content: []llm.ContentBlock{
-			{Type: "text", Text: "I will create tasks for this objective."},
+	// Build a realistic conversation: user, assistant (tool_use), tool_result
+	conversation := []llm.ToolMessage{
+		{
+			Role: "user",
+			Content: []llm.ContentBlock{
+				{Type: "text", Text: "Objective: test objective"},
+			},
 		},
-		StopReason: "tool_use",
-	}
-	turn1 := &llm.Response{
-		Content: []llm.ContentBlock{
-			{Type: "text", Text: "Tasks created. Assigning task-1."},
-			{Type: "tool_use", ToolCall: &llm.ToolCall{
-				ID:    "call-1",
-				Name:  "assign_task",
-				Input: json.RawMessage(`{"task_id":"t1"}`),
-			}},
+		{
+			Role: "assistant",
+			Content: []llm.ContentBlock{
+				{Type: "text", Text: "I will create tasks."},
+				{Type: "tool_use", ToolCall: &llm.ToolCall{
+					ID:    "call-1",
+					Name:  "create_tasks",
+					Input: json.RawMessage(`{"tasks":[]}`),
+				}},
+			},
 		},
-		StopReason: "tool_use",
+		{
+			Role: "tool_result",
+			ToolResults: []llm.ToolResult{
+				{ToolCallID: "call-1", Content: "Created 0 tasks"},
+			},
+		},
+		{
+			Role: "assistant",
+			Content: []llm.ContentBlock{
+				{Type: "text", Text: "Assigning task-1."},
+				{Type: "tool_use", ToolCall: &llm.ToolCall{
+					ID:    "call-2",
+					Name:  "assign_task",
+					Input: json.RawMessage(`{"task_id":"t1"}`),
+				}},
+			},
+		},
+		{
+			Role: "tool_result",
+			ToolResults: []llm.ToolResult{
+				{ToolCallID: "call-2", Content: "Assigned task t1"},
+			},
+		},
 	}
 
-	q.persistTurn(ctx, 0, turn0)
-	q.persistTurn(ctx, 1, turn1)
+	// Persist the full conversation
+	q.persistConversation(ctx, conversation)
 
-	// loadConversation should reconstruct messages
+	// Load it back
 	msgs, err := q.loadConversation(ctx, q.sessionID)
 	if err != nil {
 		t.Fatalf("loadConversation failed: %v", err)
 	}
 
-	// First message is always the objective (from session)
-	if len(msgs) < 1 {
-		t.Fatal("expected at least 1 message (objective)")
+	if len(msgs) != 5 {
+		t.Fatalf("expected 5 messages, got %d", len(msgs))
 	}
+
+	// Verify user message
 	if msgs[0].Role != "user" {
-		t.Errorf("first message role: want 'user', got %q", msgs[0].Role)
-	}
-	if len(msgs[0].Content) == 0 || msgs[0].Content[0].Text == "" {
-		t.Error("first message should contain the objective text")
+		t.Errorf("msg 0 role: want 'user', got %q", msgs[0].Role)
 	}
 
-	// Then 2 assistant messages (turn 0 and turn 1)
-	if len(msgs) != 3 {
-		t.Fatalf("expected 3 messages (1 objective + 2 turns), got %d", len(msgs))
-	}
-
-	// Verify turn 0 content
+	// Verify assistant with tool_use
 	if msgs[1].Role != "assistant" {
-		t.Errorf("turn 0 role: want 'assistant', got %q", msgs[1].Role)
+		t.Errorf("msg 1 role: want 'assistant', got %q", msgs[1].Role)
 	}
-	if len(msgs[1].Content) != 1 || msgs[1].Content[0].Text != "I will create tasks for this objective." {
-		t.Errorf("turn 0 content mismatch: %+v", msgs[1].Content)
-	}
-
-	// Verify turn 1 content (has both text and tool_use)
-	if msgs[2].Role != "assistant" {
-		t.Errorf("turn 1 role: want 'assistant', got %q", msgs[2].Role)
-	}
-	if len(msgs[2].Content) != 2 {
-		t.Fatalf("turn 1 expected 2 content blocks, got %d", len(msgs[2].Content))
-	}
-	if msgs[2].Content[0].Type != "text" {
-		t.Errorf("turn 1 block 0 type: want 'text', got %q", msgs[2].Content[0].Type)
-	}
-	if msgs[2].Content[1].Type != "tool_use" {
-		t.Errorf("turn 1 block 1 type: want 'tool_use', got %q", msgs[2].Content[1].Type)
-	}
-	if msgs[2].Content[1].ToolCall == nil || msgs[2].Content[1].ToolCall.Name != "assign_task" {
-		t.Errorf("turn 1 tool call mismatch: %+v", msgs[2].Content[1].ToolCall)
+	if len(msgs[1].Content) != 2 || msgs[1].Content[1].Type != "tool_use" {
+		t.Errorf("msg 1 expected text+tool_use, got %+v", msgs[1].Content)
 	}
 
-	t.Log("✅ loadConversation correctly restored turns")
+	// Verify tool_result is present (this was the bug — old format lost these)
+	if msgs[2].Role != "tool_result" {
+		t.Errorf("msg 2 role: want 'tool_result', got %q", msgs[2].Role)
+	}
+	if len(msgs[2].ToolResults) != 1 {
+		t.Errorf("msg 2 expected 1 tool result, got %d", len(msgs[2].ToolResults))
+	}
+	if msgs[2].ToolResults[0].ToolCallID != "call-1" {
+		t.Errorf("msg 2 tool result ID: want 'call-1', got %q", msgs[2].ToolResults[0].ToolCallID)
+	}
+
+	// Verify second assistant + tool_result pair
+	if msgs[3].Role != "assistant" {
+		t.Errorf("msg 3 role: want 'assistant', got %q", msgs[3].Role)
+	}
+	if msgs[4].Role != "tool_result" {
+		t.Errorf("msg 4 role: want 'tool_result', got %q", msgs[4].Role)
+	}
+
+	t.Log("✅ loadConversation correctly restored full conversation with tool_results")
+}
+
+// TestCompactMessagesPreservesToolPairs verifies compaction doesn't split tool_use/tool_result.
+func TestCompactMessagesPreservesToolPairs(t *testing.T) {
+	q, _ := testQueen(t)
+
+	// Build a long conversation with tool_use/tool_result pairs
+	var messages []llm.ToolMessage
+	messages = append(messages, llm.ToolMessage{
+		Role:    "user",
+		Content: []llm.ContentBlock{{Type: "text", Text: "Objective: test"}},
+	})
+
+	// Add 40 assistant+tool_result pairs (80 messages + 1 user = 81 total)
+	for i := 0; i < 40; i++ {
+		messages = append(messages, llm.ToolMessage{
+			Role: "assistant",
+			Content: []llm.ContentBlock{
+				{Type: "text", Text: fmt.Sprintf("Turn %d", i)},
+				{Type: "tool_use", ToolCall: &llm.ToolCall{
+					ID: fmt.Sprintf("call-%d", i), Name: "get_status",
+				}},
+			},
+		})
+		messages = append(messages, llm.ToolMessage{
+			Role:        "tool_result",
+			ToolResults: []llm.ToolResult{{ToolCallID: fmt.Sprintf("call-%d", i), Content: "ok"}},
+		})
+	}
+
+	compacted := q.compactMessages(messages)
+
+	// Verify no orphaned tool_results at the start of the kept section
+	// (skip index 0=objective and 1=summary)
+	for i := 2; i < len(compacted); i++ {
+		msg := compacted[i]
+		if i == 2 && (msg.Role == "tool_result" || len(msg.ToolResults) > 0) {
+			t.Error("compacted section starts with orphaned tool_result")
+		}
+		// Every tool_result should be preceded by an assistant with tool_use
+		if msg.Role == "tool_result" || len(msg.ToolResults) > 0 {
+			if i < 2 {
+				t.Errorf("tool_result at index %d has no predecessor", i)
+				continue
+			}
+			prev := compacted[i-1]
+			if prev.Role != "assistant" {
+				t.Errorf("tool_result at index %d preceded by %q, not assistant", i, prev.Role)
+			}
+		}
+	}
+
+	if len(compacted) >= len(messages) {
+		t.Errorf("compaction didn't reduce size: %d -> %d", len(messages), len(compacted))
+	}
+
+	t.Logf("✅ Compaction preserved tool pairs: %d → %d messages", len(messages), len(compacted))
 }
 
 // TestResumeSession_CompletedTasksNotReRun verifies that completed tasks

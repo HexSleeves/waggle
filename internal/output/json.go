@@ -295,19 +295,20 @@ func (jw *JSONWriter) SetSessionID(sessionID string) {
 
 // taskToEvent converts a task.Task to a TaskEvent.
 func taskToEvent(t *task.Task, maxOutput int) *TaskEvent {
+	lastErr, _ := t.GetLastError()
 	e := &TaskEvent{
 		TaskID:      t.ID,
 		Title:       t.Title,
 		Type:        string(t.Type),
-		Status:      string(t.Status),
-		WorkerID:    t.WorkerID,
+		Status:      string(t.GetStatus()),
+		WorkerID:    t.GetWorkerID(),
 		ParentID:    t.ParentID,
 		Priority:    int(t.Priority),
-		Description: t.Description,
+		Description: t.GetDescription(),
 		DependsOn:   t.DependsOn,
 		MaxRetries:  t.MaxRetries,
-		RetryCount:  t.RetryCount,
-		LastError:   t.LastError,
+		RetryCount:  t.GetRetryCount(),
+		LastError:   lastErr,
 	}
 
 	if !t.CreatedAt.IsZero() {
@@ -320,18 +321,18 @@ func taskToEvent(t *task.Task, maxOutput int) *TaskEvent {
 		e.CompletedAt = t.CompletedAt
 	}
 
-	if t.Result != nil {
-		output := t.Result.Output
+	if r := t.GetResult(); r != nil {
+		output := r.Output
 		if len(output) > maxOutput {
 			output = output[:maxOutput] + "... [truncated]"
 		}
 
 		e.Result = &TaskResult{
-			Success:   t.Result.Success,
+			Success:   r.Success,
 			Output:    output,
-			Errors:    t.Result.Errors,
-			Artifacts: t.Result.Artifacts,
-			Metrics:   t.Result.Metrics,
+			Errors:    r.Errors,
+			Artifacts: r.Artifacts,
+			Metrics:   r.Metrics,
 		}
 	}
 

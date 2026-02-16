@@ -64,8 +64,11 @@ func NewPool(maxParallel int, factory Factory, b *bus.MessageBus) *Pool {
 // If the task has a Timeout, the worker's context is wrapped with a deadline
 // so the process is killed automatically if it exceeds the timeout.
 func (p *Pool) Spawn(ctx context.Context, t *task.Task, adapterName string) (Bee, error) {
+	workerID := fmt.Sprintf("worker-%s-%d", t.Type, time.Now().UnixNano())
+
+	// Hold lock across capacity check, factory call, and insert to prevent
+	// TOCTOU races. Factory calls are fast (struct allocation only).
 	p.mu.Lock()
-	// Count active workers
 	active := 0
 	for _, w := range p.workers {
 		if w.Monitor() == StatusRunning {
@@ -76,15 +79,12 @@ func (p *Pool) Spawn(ctx context.Context, t *task.Task, adapterName string) (Bee
 		p.mu.Unlock()
 		return nil, fmt.Errorf("max parallel workers (%d) reached", p.maxParallel)
 	}
-	p.mu.Unlock()
 
-	workerID := fmt.Sprintf("worker-%s-%d", t.Type, time.Now().UnixNano())
 	bee, err := p.factory(workerID, adapterName)
 	if err != nil {
+		p.mu.Unlock()
 		return nil, fmt.Errorf("create worker: %w", err)
 	}
-
-	p.mu.Lock()
 	p.workers[workerID] = bee
 	p.mu.Unlock()
 
@@ -100,18 +100,16 @@ func (p *Pool) Spawn(ctx context.Context, t *task.Task, adapterName string) (Bee
 	// Apply per-task timeout: wrap context with deadline so
 	// exec.CommandContext kills the process when it expires.
 	spawnCtx := ctx
+	var timeoutCancel context.CancelFunc
 	if t.Timeout > 0 {
-		var cancel context.CancelFunc
-		spawnCtx, cancel = context.WithTimeout(ctx, t.Timeout)
+		spawnCtx, timeoutCancel = context.WithTimeout(ctx, t.Timeout)
 		// Monitor the deadline in a goroutine and publish a timeout event.
-		// Select on both parent and child context so the goroutine exits
-		// promptly when either is cancelled (e.g., SIGINT on parent).
 		go func() {
 			select {
 			case <-ctx.Done():
-				cancel()
+				timeoutCancel()
 			case <-spawnCtx.Done():
-				cancel()
+				timeoutCancel()
 				if spawnCtx.Err() == context.DeadlineExceeded {
 					if p.msgBus != nil {
 						p.msgBus.Publish(bus.Message{
@@ -128,6 +126,9 @@ func (p *Pool) Spawn(ctx context.Context, t *task.Task, adapterName string) (Bee
 	}
 
 	if err := bee.Spawn(spawnCtx, t); err != nil {
+		if timeoutCancel != nil {
+			timeoutCancel() // prevent goroutine/timer leak
+		}
 		return nil, fmt.Errorf("spawn worker: %w", err)
 	}
 

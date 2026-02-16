@@ -28,9 +28,9 @@ func (q *Queen) Results() []TaskResult {
 			ID:          t.ID,
 			Title:       t.Title,
 			Type:        t.Type,
-			Status:      t.Status,
-			Result:      t.Result,
-			WorkerID:    t.WorkerID,
+			Status:      t.GetStatus(),
+			Result:      t.GetResult(),
+			WorkerID:    t.GetWorkerID(),
 			CompletedAt: t.CompletedAt,
 		}
 		results = append(results, tr)

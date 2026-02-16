@@ -499,7 +499,7 @@ func (q *Queen) review(ctx context.Context) (bool, error) {
 				}
 				t, _ := q.tasks.Get(taskID)
 				if t != nil {
-					t.Result = result
+					t.SetResult(result)
 				}
 
 				if err := q.db.UpdateTaskStatus(ctx, q.sessionID, taskID, "complete"); err != nil {
@@ -543,19 +543,21 @@ func (q *Queen) review(ctx context.Context) (bool, error) {
 							}
 						}
 						// Re-queue with suggestions appended to description
-						if t.RetryCount < t.MaxRetries {
-							t.RetryCount++
-							t.Description += "\n\nPREVIOUS ATTEMPT REJECTED: " + verdict.Reason
+						if t.GetRetryCount() < t.MaxRetries {
+							newCount := t.IncrRetryCount()
+							rejectionMsg := "\n\nPREVIOUS ATTEMPT REJECTED: " + verdict.Reason
 							if len(verdict.Suggestions) > 0 {
-								t.Description += "\nSuggestions: " + strings.Join(verdict.Suggestions, "; ")
+								rejectionMsg += "\nSuggestions: " + strings.Join(verdict.Suggestions, "; ")
 							}
+							t.AppendDescription(rejectionMsg)
+							_ = newCount // used for logging below
 							if err := q.tasks.UpdateStatus(taskID, task.StatusPending); err != nil {
 								q.logger.Printf("⚠ Warning: failed to update task status: %v", err)
 							}
 							if err := q.db.UpdateTaskStatus(ctx, q.sessionID, taskID, "pending"); err != nil {
 								q.logger.Printf("⚠ Warning: failed to update task status: %v", err)
 							}
-							q.logVerbose("  🔄 Re-queued task %s (attempt %d/%d)", taskID, t.RetryCount, t.MaxRetries)
+							q.logVerbose("  🔄 Re-queued task %s (attempt %d/%d)", taskID, newCount, t.MaxRetries)
 							q.mu.Lock()
 							delete(q.assignments, workerID)
 							q.mu.Unlock()
@@ -640,12 +642,13 @@ func (q *Queen) review(ctx context.Context) (bool, error) {
 // injectDefaultConstraints adds scope-limiting constraints to a task.
 // Used by both delegate() and agent-mode handleAssignTask().
 func injectDefaultConstraints(t *task.Task) {
-	t.Constraints = appendUnique(t.Constraints,
+	existing := t.GetConstraints()
+	t.SetConstraints(appendUnique(existing,
 		"Do NOT make changes outside the scope described in this task",
 		"Do NOT refactor, reorganize, or 'improve' code unrelated to this task",
 		"Do NOT modify function signatures unless explicitly asked to",
 		"If you find issues outside your scope, note them in your output but do NOT fix them",
-	)
+	))
 }
 
 // persistNewTask adds a task to the graph and persists it to the database.

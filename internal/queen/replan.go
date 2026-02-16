@@ -69,7 +69,7 @@ func (q *Queen) buildReplanPrompt() string {
 
 	var completed, failed, pending []*task.Task
 	for _, t := range allTasks {
-		switch t.Status {
+		switch t.GetStatus() {
 		case task.StatusComplete:
 			completed = append(completed, t)
 		case task.StatusFailed:
@@ -97,9 +97,11 @@ func (q *Queen) buildReplanPrompt() string {
 	}
 	for _, t := range failed {
 		b.WriteString(fmt.Sprintf("- [%s] %s (id: %s)\n", t.Type, t.Title, t.ID))
-		errMsg := t.LastError
-		if errMsg == "" && t.Result != nil && len(t.Result.Errors) > 0 {
-			errMsg = strings.Join(t.Result.Errors, "; ")
+		errMsg, _ := t.GetLastError()
+		if errMsg == "" {
+			if r := t.GetResult(); r != nil && len(r.Errors) > 0 {
+				errMsg = strings.Join(r.Errors, "; ")
+			}
 		}
 		if errMsg != "" {
 			b.WriteString(fmt.Sprintf("  Error: %s\n", truncate(errMsg, 300)))
@@ -127,8 +129,8 @@ func (q *Queen) buildReplanPrompt() string {
 
 // taskOutput retrieves the output for a completed task from the blackboard.
 func (q *Queen) taskOutput(t *task.Task) string {
-	if t.Result != nil && t.Result.Output != "" {
-		return t.Result.Output
+	if r := t.GetResult(); r != nil && r.Output != "" {
+		return r.Output
 	}
 	// Fallback: check blackboard
 	key := fmt.Sprintf("result-%s", t.ID)

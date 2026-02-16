@@ -313,8 +313,8 @@ func handleAssignTask(ctx context.Context, q *Queen, input json.RawMessage) (str
 	if !ok {
 		return "", fmt.Errorf("task %q not found", in.TaskID)
 	}
-	if t.Status != task.StatusPending {
-		return "", fmt.Errorf("task %q is not pending (current status: %s)", in.TaskID, t.Status)
+	if t.GetStatus() != task.StatusPending {
+		return "", fmt.Errorf("task %q is not pending (current status: %s)", in.TaskID, t.GetStatus())
 	}
 
 	// Check dependencies are met
@@ -350,7 +350,7 @@ func handleAssignTask(ctx context.Context, q *Queen, input json.RawMessage) (str
 	if err := q.tasks.UpdateStatus(t.ID, task.StatusRunning); err != nil {
 		q.logger.Printf("⚠ Warning: failed to update task status: %v", err)
 	}
-	t.WorkerID = bee.ID()
+	t.SetWorkerID(bee.ID())
 
 	if err := q.db.UpdateTaskStatus(ctx, q.sessionID, t.ID, "running"); err != nil {
 		q.logger.Printf("⚠ Warning: failed to update task status: %v", err)
@@ -379,15 +379,16 @@ func handleGetStatus(ctx context.Context, q *Queen, input json.RawMessage) (stri
 	infos := make([]taskInfo, 0, len(allTasks))
 	counts := map[string]int{}
 	for _, t := range allTasks {
+		status := t.GetStatus()
 		infos = append(infos, taskInfo{
 			ID:       t.ID,
 			Title:    t.Title,
 			Type:     string(t.Type),
-			Status:   string(t.Status),
-			WorkerID: t.WorkerID,
+			Status:   string(status),
+			WorkerID: t.GetWorkerID(),
 			Priority: int(t.Priority),
 		})
-		counts[string(t.Status)]++
+		counts[string(status)]++
 	}
 
 	result := map[string]interface{}{
@@ -421,19 +422,21 @@ func handleGetTaskOutput(ctx context.Context, q *Queen, input json.RawMessage) (
 		return "", fmt.Errorf("task %q not found", in.TaskID)
 	}
 
-	if t.Status != task.StatusComplete && t.Status != task.StatusFailed {
-		return fmt.Sprintf("Task %q is still %s — no output yet.", in.TaskID, t.Status), nil
+	status := t.GetStatus()
+	if status != task.StatusComplete && status != task.StatusFailed {
+		return fmt.Sprintf("Task %q is still %s — no output yet.", in.TaskID, status), nil
 	}
 
-	if t.Result != nil {
+	result := t.GetResult()
+	if result != nil {
 		var b strings.Builder
-		fmt.Fprintf(&b, "Task: %s (%s)\nStatus: %s\nSuccess: %v\n", t.Title, t.ID, t.Status, t.Result.Success)
-		if t.Result.Output != "" {
-			fmt.Fprintf(&b, "Output:\n%s\n", t.Result.Output)
+		fmt.Fprintf(&b, "Task: %s (%s)\nStatus: %s\nSuccess: %v\n", t.Title, t.ID, status, result.Success)
+		if result.Output != "" {
+			fmt.Fprintf(&b, "Output:\n%s\n", result.Output)
 		}
-		if len(t.Result.Errors) > 0 {
+		if len(result.Errors) > 0 {
 			fmt.Fprintf(&b, "Errors:\n")
-			for _, e := range t.Result.Errors {
+			for _, e := range result.Errors {
 				fmt.Fprintf(&b, "  - %s\n", e)
 			}
 		}
@@ -444,11 +447,11 @@ func handleGetTaskOutput(ctx context.Context, q *Queen, input json.RawMessage) (
 	key := fmt.Sprintf("result-%s", in.TaskID)
 	if entry, found := q.board.Read(key); found {
 		if s, ok := entry.Value.(string); ok {
-			return fmt.Sprintf("Task: %s (%s)\nStatus: %s\nOutput:\n%s", t.Title, t.ID, t.Status, s), nil
+			return fmt.Sprintf("Task: %s (%s)\nStatus: %s\nOutput:\n%s", t.Title, t.ID, status, s), nil
 		}
 	}
 
-	return fmt.Sprintf("Task %q (%s) has no output available.", in.TaskID, t.Status), nil
+	return fmt.Sprintf("Task %q (%s) has no output available.", in.TaskID, status), nil
 }
 
 // ---------- approve_task ----------
@@ -482,7 +485,7 @@ func handleApproveTask(ctx context.Context, q *Queen, input json.RawMessage) (st
 		})
 	}
 
-	return fmt.Sprintf("Task %q (%s) approved. Status: %s", in.TaskID, t.Title, t.Status), nil
+	return fmt.Sprintf("Task %q (%s) approved. Status: %s", in.TaskID, t.Title, t.GetStatus()), nil
 }
 
 // ---------- reject_task ----------
@@ -509,12 +512,13 @@ func handleRejectTask(ctx context.Context, q *Queen, input json.RawMessage) (str
 		return "", fmt.Errorf("task %q not found", in.TaskID)
 	}
 
-	if t.RetryCount >= t.MaxRetries {
-		return "", fmt.Errorf("task %q has exhausted all retries (%d/%d)", in.TaskID, t.RetryCount, t.MaxRetries)
+	retryCount := t.GetRetryCount()
+	if retryCount >= t.MaxRetries {
+		return "", fmt.Errorf("task %q has exhausted all retries (%d/%d)", in.TaskID, retryCount, t.MaxRetries)
 	}
 
-	t.RetryCount++
-	t.Description += "\n\nREJECTED (attempt " + fmt.Sprintf("%d/%d", t.RetryCount, t.MaxRetries) + "): " + in.Feedback
+	newCount := t.IncrRetryCount()
+	t.AppendDescription("\n\nREJECTED (attempt " + fmt.Sprintf("%d/%d", newCount, t.MaxRetries) + "): " + in.Feedback)
 
 	if err := q.tasks.UpdateStatus(in.TaskID, task.StatusPending); err != nil {
 		q.logger.Printf("⚠ Warning: failed to update task status: %v", err)
@@ -522,13 +526,13 @@ func handleRejectTask(ctx context.Context, q *Queen, input json.RawMessage) (str
 	if err := q.db.UpdateTaskStatus(ctx, q.sessionID, in.TaskID, "pending"); err != nil {
 		q.logger.Printf("⚠ Warning: failed to update task status: %v", err)
 	}
-	if err := q.db.UpdateTaskRetryCount(ctx, q.sessionID, in.TaskID, t.RetryCount); err != nil {
+	if err := q.db.UpdateTaskRetryCount(ctx, q.sessionID, in.TaskID, newCount); err != nil {
 		q.logger.Printf("⚠ Warning: failed to update task retry count: %v", err)
 	}
 
 	// Post feedback to blackboard
 	q.board.Post(&blackboard.Entry{
-		Key:      fmt.Sprintf("rejection-%s-%d", in.TaskID, t.RetryCount),
+		Key:      fmt.Sprintf("rejection-%s-%d", in.TaskID, newCount),
 		Value:    in.Feedback,
 		PostedBy: "queen",
 		TaskID:   in.TaskID,
@@ -536,7 +540,7 @@ func handleRejectTask(ctx context.Context, q *Queen, input json.RawMessage) (str
 	})
 
 	return fmt.Sprintf("Task %q rejected and re-queued (attempt %d/%d). Feedback appended to description.",
-		in.TaskID, t.RetryCount, t.MaxRetries), nil
+		in.TaskID, newCount, t.MaxRetries), nil
 }
 
 // ---------- wait_for_workers ----------
@@ -559,7 +563,7 @@ func handleWaitForWorkers(ctx context.Context, q *Queen, input json.RawMessage) 
 	q.mu.RLock()
 	for _, taskID := range q.assignments {
 		if t, ok := q.tasks.Get(taskID); ok {
-			runningBefore[taskID] = t.Status
+			runningBefore[taskID] = t.GetStatus()
 		}
 	}
 	q.mu.RUnlock()
@@ -584,8 +588,9 @@ func handleWaitForWorkers(ctx context.Context, q *Queen, input json.RawMessage) 
 			var changed []string
 			for taskID, oldStatus := range runningBefore {
 				if t, ok := q.tasks.Get(taskID); ok {
-					if t.Status != oldStatus {
-						changed = append(changed, fmt.Sprintf("%s: %s -> %s", taskID, oldStatus, t.Status))
+					newStatus := t.GetStatus()
+					if newStatus != oldStatus {
+						changed = append(changed, fmt.Sprintf("%s: %s -> %s", taskID, oldStatus, newStatus))
 					}
 				}
 			}
@@ -638,7 +643,7 @@ func (q *Queen) processWorkerResults(ctx context.Context) {
 			}
 			t, _ := q.tasks.Get(taskID)
 			if t != nil {
-				t.Result = result
+				t.SetResult(result)
 			}
 			if err := q.db.UpdateTaskStatus(ctx, q.sessionID, taskID, "complete"); err != nil {
 				q.logger.Printf("⚠ Warning: failed to update task status: %v", err)

@@ -24,11 +24,10 @@ func (q *Queen) handleTaskFailure(ctx context.Context, taskID, workerID string, 
 
 	// Classify the error type
 	errType := errors.ClassifyError(fmt.Errorf("%s", errMsg))
-	t.LastError = errMsg
-	t.LastErrorType = string(errType)
+	t.SetLastError(errMsg, string(errType))
 
 	// Update error type in database
-	if err := q.db.UpdateTaskErrorType(ctx, q.sessionID, taskID, t.LastErrorType); err != nil {
+	if err := q.db.UpdateTaskErrorType(ctx, q.sessionID, taskID, string(errType)); err != nil {
 		q.logger.Printf("  ⚠ Warning: failed to update task error type: %v", err)
 	}
 
@@ -38,13 +37,13 @@ func (q *Queen) handleTaskFailure(ctx context.Context, taskID, workerID string, 
 	isRetryable := errors.IsRetryable(fmt.Errorf("%s", errMsg))
 
 	// Don't increment retry count for permanent errors - they won't succeed on retry
-	if isRetryable && t.RetryCount < t.MaxRetries {
-		t.RetryCount++
+	if isRetryable && t.GetRetryCount() < t.MaxRetries {
+		newCount := t.IncrRetryCount()
 
 		// Calculate exponential backoff delay
 		baseDelay := 2 * time.Second
 		maxDelay := 60 * time.Second
-		backoffDelay := errors.CalculateBackoff(baseDelay, t.RetryCount-1, maxDelay)
+		backoffDelay := errors.CalculateBackoff(baseDelay, newCount-1, maxDelay)
 
 		if err := q.tasks.UpdateStatus(taskID, task.StatusPending); err != nil {
 			q.logger.Printf("  ⚠ Warning: failed to update task status: %v", err)
@@ -52,14 +51,14 @@ func (q *Queen) handleTaskFailure(ctx context.Context, taskID, workerID string, 
 		if err := q.db.UpdateTaskStatus(ctx, q.sessionID, taskID, "pending"); err != nil {
 			q.logger.Printf("  ⚠ Warning: failed to update task status in db: %v", err)
 		}
-		if err := q.db.UpdateTaskRetryCount(ctx, q.sessionID, taskID, t.RetryCount); err != nil {
+		if err := q.db.UpdateTaskRetryCount(ctx, q.sessionID, taskID, newCount); err != nil {
 			q.logger.Printf("  ⚠ Warning: failed to update task retry count in db: %v", err)
 		}
 
 		// Apply backoff: set RetryAfter so Ready() skips this task until the delay elapses
-		t.RetryAfter = time.Now().Add(backoffDelay)
+		t.SetRetryAfter(time.Now().Add(backoffDelay))
 
-		q.logVerbose("  🔄 Retrying task %s (attempt %d/%d) after %v backoff", taskID, t.RetryCount, t.MaxRetries, backoffDelay)
+		q.logVerbose("  🔄 Retrying task %s (attempt %d/%d) after %v backoff", taskID, newCount, t.MaxRetries, backoffDelay)
 	} else if !isRetryable {
 		// Permanent error - fail immediately without wasting retries
 		q.logVerbose("  💀 Task %s has permanent error, failing immediately", taskID)

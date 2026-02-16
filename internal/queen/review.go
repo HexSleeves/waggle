@@ -96,11 +96,12 @@ func buildReviewPrompt(t *task.Task, result *task.Result) string {
 	b.WriteString(fmt.Sprintf("ID:    %s\n", t.ID))
 	b.WriteString(fmt.Sprintf("Type:  %s\n", t.Type))
 	b.WriteString(fmt.Sprintf("Title: %s\n", t.Title))
-	b.WriteString(fmt.Sprintf("Description:\n%s\n", t.Description))
+	b.WriteString(fmt.Sprintf("Description:\n%s\n", t.GetDescription()))
 
-	if len(t.Constraints) > 0 {
+	constraints := t.GetConstraints()
+	if len(constraints) > 0 {
 		b.WriteString("Constraints:\n")
-		for _, c := range t.Constraints {
+		for _, c := range constraints {
 			b.WriteString(fmt.Sprintf("  - %s\n", c))
 		}
 	}

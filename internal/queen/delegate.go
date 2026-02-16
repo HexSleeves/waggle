@@ -53,7 +53,7 @@ func (q *Queen) delegate(ctx context.Context) error {
 		if err := q.tasks.UpdateStatus(t.ID, task.StatusRunning); err != nil {
 			q.logger.Printf("  ⚠ Warning: failed to update task status: %v", err)
 		}
-		t.WorkerID = bee.ID()
+		t.SetWorkerID(bee.ID())
 
 		if err := q.db.UpdateTaskStatus(ctx, q.sessionID, t.ID, "running"); err != nil {
 			q.logger.Printf("  ⚠ Warning: failed to update task status in db: %v", err)

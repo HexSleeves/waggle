@@ -107,11 +107,9 @@ func (q *Queen) RunAgent(ctx context.Context, objective string) error {
 			}
 		}
 
-		// Persist the turn
 		if err := q.db.UpdateSessionPhase(ctx, q.sessionID, "agent", turn); err != nil {
 			q.logger.Printf("⚠ Warning: failed to update session phase: %v", err)
 		}
-		q.persistTurn(ctx, turn, resp)
 
 		// If no tool calls, the Queen is done talking
 		if resp.StopReason == "end_turn" {
@@ -181,6 +179,9 @@ func (q *Queen) RunAgent(ctx context.Context, objective string) error {
 				ToolResults: toolResults,
 			})
 		}
+
+		// Persist full conversation (after both assistant + tool_result appended)
+		q.persistConversation(ctx, messages)
 
 		// Handle terminal tools
 		if completed {
@@ -282,9 +283,8 @@ func (q *Queen) RunAgentResume(ctx context.Context, sessionID string) error {
 			}
 		}
 
-		q.persistTurn(ctx, turn, resp)
-
 		if resp.StopReason == "end_turn" {
+			q.persistConversation(ctx, messages)
 			if err := q.db.UpdateSessionStatus(ctx, q.sessionID, "done"); err != nil {
 				q.logger.Printf("⚠ Warning: failed to update session status: %v", err)
 			}
@@ -325,6 +325,8 @@ func (q *Queen) RunAgentResume(ctx context.Context, sessionID string) error {
 			})
 		}
 
+		q.persistConversation(ctx, messages)
+
 		if completed {
 			if err := q.db.UpdateSessionStatus(ctx, q.sessionID, "done"); err != nil {
 				q.logger.Printf("⚠ Warning: failed to update session status: %v", err)
@@ -353,23 +355,38 @@ func (q *Queen) SupportsAgentMode() bool {
 	return ok
 }
 
-// persistTurn saves a conversation turn to the database for resume support.
-func (q *Queen) persistTurn(ctx context.Context, turn int, resp *llm.Response) {
-	data, err := json.Marshal(resp)
+// persistConversation saves the full conversation to the database for resume support.
+func (q *Queen) persistConversation(ctx context.Context, messages []llm.ToolMessage) {
+	data, err := json.Marshal(messages)
 	if err != nil {
-		q.logger.Printf("⚠ Failed to marshal turn: %v", err)
+		q.logger.Printf("⚠ Failed to marshal conversation: %v", err)
 		return
 	}
-	if err := q.db.SetKV(ctx, fmt.Sprintf("agent_turn_%s_%d", q.sessionID, turn), string(data)); err != nil {
-		q.logger.Printf("⚠ Warning: failed to persist turn: %v", err)
+	if err := q.db.SetKV(ctx, fmt.Sprintf("agent_conversation_%s", q.sessionID), string(data)); err != nil {
+		q.logger.Printf("⚠ Warning: failed to persist conversation: %v", err)
 	}
 }
 
-// loadConversation reconstructs the message history from persisted turns.
+// loadConversation loads the full conversation from the database.
+// Falls back to the legacy per-turn format for older sessions.
 func (q *Queen) loadConversation(ctx context.Context, sessionID string) ([]llm.ToolMessage, error) {
+	// New format: full conversation blob
+	data, err := q.db.GetKV(ctx, fmt.Sprintf("agent_conversation_%s", sessionID))
+	if err == nil && data != "" {
+		var messages []llm.ToolMessage
+		if err := json.Unmarshal([]byte(data), &messages); err == nil && len(messages) > 0 {
+			return messages, nil
+		}
+	}
+
+	// Legacy fallback: per-turn responses (assistant only, no tool_results)
+	return q.loadConversationLegacy(ctx, sessionID)
+}
+
+// loadConversationLegacy reconstructs conversation from old per-turn format.
+func (q *Queen) loadConversationLegacy(ctx context.Context, sessionID string) ([]llm.ToolMessage, error) {
 	var messages []llm.ToolMessage
 
-	// Get the objective as the first user message
 	session, err := q.db.GetSession(ctx, sessionID)
 	if err != nil {
 		return nil, err
@@ -383,7 +400,6 @@ func (q *Queen) loadConversation(ctx context.Context, sessionID string) ([]llm.T
 		}},
 	})
 
-	// Load persisted turns
 	for i := 0; i < 1000; i++ {
 		data, err := q.db.GetKV(ctx, fmt.Sprintf("agent_turn_%s_%d", sessionID, i))
 		if err != nil || data == "" {
@@ -395,7 +411,6 @@ func (q *Queen) loadConversation(ctx context.Context, sessionID string) ([]llm.T
 			continue
 		}
 
-		// Add assistant message
 		messages = append(messages, llm.ToolMessage{
 			Role:    "assistant",
 			Content: resp.Content,
@@ -407,22 +422,44 @@ func (q *Queen) loadConversation(ctx context.Context, sessionID string) ([]llm.T
 
 // compactMessages reduces the conversation size by summarizing older turns.
 // Keeps the first message (objective) and the last N messages intact.
+// Never splits tool_use/tool_result pairs.
 func (q *Queen) compactMessages(messages []llm.ToolMessage) []llm.ToolMessage {
-	keepLast := 20 // keep last 20 messages for context
+	keepLast := 20
 
 	if len(messages) <= keepLast+2 {
 		return messages
 	}
 
-	// Build a summary of the middle section
+	// Find a safe cut point that doesn't split tool_use/tool_result pairs.
+	idealCut := len(messages) - keepLast
+	cutPoint := idealCut
+	for cutPoint > 1 {
+		msg := messages[cutPoint]
+		// Don't start the kept section with a tool_result
+		if msg.Role == "tool_result" || len(msg.ToolResults) > 0 {
+			cutPoint--
+			continue
+		}
+		// Don't cut right after an assistant message with tool_use
+		if cutPoint > 0 {
+			prev := messages[cutPoint-1]
+			if prev.Role == "assistant" && hasToolUse(prev) {
+				cutPoint--
+				continue
+			}
+		}
+		break
+	}
+	if cutPoint <= 1 {
+		cutPoint = idealCut // best effort if no safe boundary found
+	}
+
+	// Build summary of compacted section
 	var summary strings.Builder
 	summary.WriteString("[Conversation history compacted. Summary of earlier turns:]\n")
 
-	middleStart := 1 // skip the first (objective) message
-	middleEnd := len(messages) - keepLast
-
 	toolCallCount := 0
-	for _, msg := range messages[middleStart:middleEnd] {
+	for _, msg := range messages[1:cutPoint] {
 		for _, block := range msg.Content {
 			if block.Type == "tool_use" && block.ToolCall != nil {
 				toolCallCount++
@@ -437,11 +474,9 @@ func (q *Queen) compactMessages(messages []llm.ToolMessage) []llm.ToolMessage {
 			}
 		}
 	}
+	summary.WriteString(fmt.Sprintf("\n[%d tool calls in compacted section]\n", toolCallCount))
 
-	summary.WriteString(fmt.Sprintf("\n[%d tool calls were made in the compacted section]\n", toolCallCount))
-
-	// Reconstruct: objective + summary + last N messages
-	compacted := make([]llm.ToolMessage, 0, keepLast+2)
+	compacted := make([]llm.ToolMessage, 0, len(messages)-cutPoint+2)
 	compacted = append(compacted, messages[0]) // objective
 	compacted = append(compacted, llm.ToolMessage{
 		Role: "user",
@@ -450,12 +485,22 @@ func (q *Queen) compactMessages(messages []llm.ToolMessage) []llm.ToolMessage {
 			Text: summary.String(),
 		}},
 	})
-	compacted = append(compacted, messages[middleEnd:]...)
+	compacted = append(compacted, messages[cutPoint:]...)
 
 	if !q.quiet {
 		q.logger.Printf("📦 Compacted conversation: %d → %d messages", len(messages), len(compacted))
 	}
 	return compacted
+}
+
+// hasToolUse returns true if the message contains any tool_use content blocks.
+func hasToolUse(msg llm.ToolMessage) bool {
+	for _, block := range msg.Content {
+		if block.Type == "tool_use" {
+			return true
+		}
+	}
+	return false
 }
 
 // SetupSignalHandler sets up graceful shutdown on SIGINT/SIGTERM.
