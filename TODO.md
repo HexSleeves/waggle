@@ -23,6 +23,9 @@
 - [x] `waggle sessions` — list past sessions with task counts, JSON output support
 - [x] `waggle logs` — tail/stream event log with `--follow`, emoji icons, JSON output
 - [x] Critical bug fixes (PR1) — 8 fixes: multi-word objectives, runJSON panic, runErr race, idempotent Close, assignment cleanup, max-iterations status, ListSessions NULL
+- [x] Task synchronization (PR2) — mutex on Task struct, 14 thread-safe getters/setters, all callers updated
+- [x] Conversation persistence (PR3) — persist full []ToolMessage, tool-aware compaction, legacy fallback
+- [x] Worker pool fixes (PR4) — TOCTOU on capacity check, context cancel leak on spawn failure
 
 ## P1 — High (next up)
 
