@@ -16,7 +16,7 @@
 - [x] GitHub Actions CI (fmt-check + vet + test + build)
 - [x] Justfile for build/test/run commands
 - [x] Queen god-object split into delegate.go, planner.go, failure.go, reporter.go
-- [x] Comprehensive test suite: 12,600 lines, 30 test files, all passing
+- [x] Comprehensive test suite: 13,100 lines, 30 test files, all passing
 - [x] Session resume E2E — 7 tests covering interrupted session continuity, task state restore, conversation history
 - [x] TUI resume mode — `cmdResume` wired into TUI with `runResumeTUI`, shared `startQueenWithFunc` helper
 - [x] Adapter health check — `HealthCheck()` on `CLIAdapter`, `setupAdapters()` extracted, fails fast before planning

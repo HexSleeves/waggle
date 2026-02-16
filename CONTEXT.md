@@ -1,6 +1,6 @@
 # Waggle — Project Context
 
-> Last updated: 2026-02-15
+> Last updated: 2026-02-16
 
 ## What This Is
 
@@ -84,16 +84,16 @@ The structured Plan → Delegate → Monitor → Review → Replan loop. The Que
 | `internal/adapter` | `claude.go`, `kimi.go`, `codex.go`, `opencode.go`, `gemini.go`, `exec.go` | Thin constructors (23-29 lines each) configuring `CLIAdapter` |
 | `internal/adapter` | `adapter.go` | `Registry` + `TaskRouter` (maps task types → configured default adapter) |
 | `internal/adapter` | `utils.go` | `streamWriter` (live output with max size cap), `buildPrompt()`, `getExitCode()` |
-| `internal/bus` | `bus.go` | In-process pub/sub message bus with panic-safe handler dispatch |
+| `internal/bus` | `bus.go` | In-process pub/sub message bus with panic-safe handler dispatch + unsubscribe |
 | `internal/blackboard` | `blackboard.go` | Shared memory — workers post results, Queen reads. History capped at 10k entries. |
 | `internal/state` | `db.go` | **SQLite persistence** — sessions, events, tasks, blackboard, kv |
-| `internal/task` | `task.go` | Task graph with dependency tracking, priority, status, cycle detection, `RetryAfter` backoff |
+| `internal/task` | `task.go` | Task graph with dependency tracking, priority, status, cycle detection, `RetryAfter` backoff, mutex-protected fields |
 | `internal/config` | `config.go` | Configuration with defaults, JSON serialization |
 | `internal/safety` | `safety.go` | Path allowlisting, command blocklisting — enforced in all adapters |
 | `internal/compact` | `compact.go` | Context window management, token estimation, summarization |
 | `internal/errors` | `errors.go` | Error classification, retry/permanent types, jittered exponential backoff |
 
-**Total: ~9,600 lines of source + ~12,600 lines of tests across 22,200 total Go lines (64 commits)**
+**Total: ~10,400 lines of source + ~13,100 lines of tests across 23,500 total Go lines (76 commits)**
 
 ## Key Interfaces
 
@@ -232,6 +232,7 @@ Three layers control what workers can and cannot do:
 `safety.Guard` wired into all adapter constructors, enforced at spawn time:
 
 - `ValidateTaskPaths()`, `CheckCommand()`, `IsReadOnly()`, `CheckFileSize()`
+- `CheckPath()` resolves symlinks via `filepath.EvalSymlinks()` to prevent directory escape
 - All adapter goroutines have `defer/recover` for panic safety
 
 ## Persistence Layer
@@ -245,9 +246,9 @@ Three layers control what workers can and cannot do:
 
 - **sessions** — one row per `waggle run` invocation
 - **events** — append-only event log indexed by session + type
-- **tasks** — full task state (status, worker_id, result JSON, retries, deps)
+- **tasks** — full task state (status, worker_id, result JSON, retries, deps, constraints, allowed_paths, context)
 - **blackboard** — persisted shared memory (key/value per session)
-- **kv** — general purpose key-value store (agent conversation turns)
+- **kv** — general purpose key-value store (full agent conversation as JSON blob for resume)
 
 ## CLI Commands
 
@@ -328,7 +329,7 @@ just clean              # Remove binary + .hive/
 | ------- | ----- | ------ |
 | `adapter` | Functionality, safety integration, prompt building, stream writer | ✅ |
 | `blackboard` | Post/Read, List, Delete, History, Watch, concurrency | ✅ |
-| `bus` | Publish, Subscribe, panic recovery | ✅ |
+| `bus` | Publish, Subscribe, Unsubscribe, panic recovery, concurrency | ✅ |
 | `compact` | Context lifecycle, compaction, token estimation, summarizer | ✅ |
 | `config` | Defaults, Load/Save roundtrip, HivePath, output modes | ✅ |
 | `errors` | Classification, backoff, jitter, panic recovery | ✅ |
@@ -342,7 +343,7 @@ just clean              # Remove binary + .hive/
 | `output` | ❌ No tests |
 | `tui` | ❌ No tests |
 
-**12,600 lines of tests across 30 test files. All passing.**
+**13,100 lines of tests across 30 test files. All passing.**
 
 ## What Was Tested End-to-End
 
@@ -355,6 +356,14 @@ just clean              # Remove binary + .hive/
 7. **Agent mode** — Queen as autonomous tool-using agent ✅
 8. **TUI dashboard** — real-time Queen/worker/task display ✅
 9. **Waggle on itself** — framework planned 5 tasks, delegated in parallel waves of 4 ✅
+
+## Code Review Status
+
+A principal-level code review (REVIEW.md) identified 34 findings across all severity levels. **All 34 have been resolved** across PRs 1–7:
+
+- **CRIT/HIGH (14)**: Task struct races (mutex), conversation persistence (full blob), compaction (tool-pair-aware), CLI bugs (args join, panic guards, race-free error passing), worker pool TOCTOU, assignment cleanup, session status
+- **MED (12)**: Gemini API key moved to header, symlink resolution in safety guard, HTTP client timeouts, JSON parse error handling, plan fallback logging, atomic task IDs, config error propagation, TUI display-width wrapping, nil guards, DB handle leak fix
+- **LOW (8)**: Dead type removal, unused field removal, fmt.Printf→logger, signal handler cleanup, boilerplate extraction, DB.Raw() removal, bus unsubscribe, task constraint persistence
 
 ## Known Issues
 
@@ -375,7 +384,7 @@ just clean              # Remove binary + .hive/
 ## Repository
 
 - GitHub: <https://github.com/HexSleeves/waggle>
-- 64 commits on `main`
+- 76 commits on `main`
 - Build: `just build` / `just ci`
 - CI: GitHub Actions (fmt-check + vet + test + build on push/PR)
 - No releases yet
