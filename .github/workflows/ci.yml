@@ -27,3 +27,9 @@ jobs:
 
       - name: Build
         run: go build -o waggle ./cmd/waggle/
+
+      - name: Validate GoReleaser config
+        uses: goreleaser/goreleaser-action@v6
+        with:
+          version: latest
+          args: check
