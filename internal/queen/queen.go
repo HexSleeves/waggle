@@ -35,7 +35,8 @@ const (
 
 // Queen is the central orchestrator agent
 type Queen struct {
-	mu sync.RWMutex
+	mu        sync.RWMutex
+	closeOnce sync.Once
 
 	cfg      *config.Config
 	bus      *bus.MessageBus
@@ -461,6 +462,9 @@ func (q *Queen) Run(ctx context.Context, objective string) error {
 		}
 	}
 
+	if err := q.db.UpdateSessionStatus(ctx, q.sessionID, "failed"); err != nil {
+		q.logger.Printf("⚠ Warning: failed to update session status: %v", err)
+	}
 	return fmt.Errorf("max iterations (%d) reached", q.cfg.Queen.MaxIterations)
 }
 
@@ -552,6 +556,9 @@ func (q *Queen) review(ctx context.Context) (bool, error) {
 								q.logger.Printf("⚠ Warning: failed to update task status: %v", err)
 							}
 							q.logVerbose("  🔄 Re-queued task %s (attempt %d/%d)", taskID, t.RetryCount, t.MaxRetries)
+							q.mu.Lock()
+							delete(q.assignments, workerID)
+							q.mu.Unlock()
 							continue
 						}
 						q.logVerbose("  💀 Task %s rejected but max retries reached, accepting", taskID)
@@ -666,20 +673,22 @@ func (q *Queen) savePhase() {
 
 // Close cleans up resources
 func (q *Queen) Close() error {
-	q.pool.KillAll()
-	if q.sessionID != "" {
-		// Save current phase for potential resumption
-		q.savePhase()
-		// Only set status to 'stopped' if current status is not terminal
-		if session, err := q.db.GetSession(context.Background(), q.sessionID); err == nil {
-			if session.Status != "done" && session.Status != "failed" {
-				if err := q.db.UpdateSessionStatus(context.Background(), q.sessionID, "stopped"); err != nil {
-					q.logger.Printf("⚠ Warning: failed to update session status: %v", err)
+	var closeErr error
+	q.closeOnce.Do(func() {
+		q.pool.KillAll()
+		if q.sessionID != "" {
+			q.savePhase()
+			if session, err := q.db.GetSession(context.Background(), q.sessionID); err == nil {
+				if session.Status != "done" && session.Status != "failed" {
+					if err := q.db.UpdateSessionStatus(context.Background(), q.sessionID, "stopped"); err != nil {
+						q.logger.Printf("⚠ Warning: failed to update session status: %v", err)
+					}
 				}
 			}
 		}
-	}
-	return q.db.Close()
+		closeErr = q.db.Close()
+	})
+	return closeErr
 }
 
 // SetLogger replaces the Queen's logger (used by TUI to capture output).

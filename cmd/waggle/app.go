@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/urfave/cli/v3"
 )
@@ -142,7 +143,7 @@ func newApp() *cli.Command {
 				// No objective: start interactive TUI
 				return runObjective(ctx, cmd, "")
 			}
-			objective := args[0]
+			objective := strings.Join(args, " ")
 			return runObjective(ctx, cmd, objective)
 		},
 	}

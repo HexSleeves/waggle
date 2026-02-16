@@ -567,9 +567,9 @@ func (s *DB) ListSessions(ctx context.Context, limit int) ([]SessionSummary, err
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT s.id, s.objective, s.status, s.created_at, s.updated_at,
 			COUNT(t.id) AS total_tasks,
-			SUM(CASE WHEN t.status = 'complete' THEN 1 ELSE 0 END) AS completed,
-			SUM(CASE WHEN t.status = 'failed' THEN 1 ELSE 0 END) AS failed,
-			SUM(CASE WHEN t.status = 'pending' THEN 1 ELSE 0 END) AS pending
+			COALESCE(SUM(CASE WHEN t.status = 'complete' THEN 1 ELSE 0 END), 0) AS completed,
+			COALESCE(SUM(CASE WHEN t.status = 'failed' THEN 1 ELSE 0 END), 0) AS failed,
+			COALESCE(SUM(CASE WHEN t.status = 'pending' THEN 1 ELSE 0 END), 0) AS pending
 		FROM sessions s
 		LEFT JOIN tasks t ON s.id = t.session_id
 		GROUP BY s.id

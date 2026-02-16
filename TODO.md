@@ -22,6 +22,7 @@
 - [x] Adapter health check — `HealthCheck()` on `CLIAdapter`, `setupAdapters()` extracted, fails fast before planning
 - [x] `waggle sessions` — list past sessions with task counts, JSON output support
 - [x] `waggle logs` — tail/stream event log with `--follow`, emoji icons, JSON output
+- [x] Critical bug fixes (PR1) — 8 fixes: multi-word objectives, runJSON panic, runErr race, idempotent Close, assignment cleanup, max-iterations status, ListSessions NULL
 
 ## P1 — High (next up)
 

@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
@@ -98,7 +99,7 @@ func cmdRun(ctx context.Context, cmd *cli.Command) error {
 	args := cmd.Args().Slice()
 	objective := ""
 	if len(args) > 0 {
-		objective = args[0]
+		objective = strings.Join(args, " ")
 	}
 	return runObjective(ctx, cmd, objective)
 }
@@ -245,7 +246,7 @@ func pollWorkerOutputs(ctx context.Context, q *queen.Queen, tuiProg *tui.Program
 }
 
 // startQueen runs the Queen in a goroutine and sends Done when finished.
-func startQueen(ctx context.Context, q *queen.Queen, tuiProg *tui.Program, objective string, forceLegacy bool) (context.CancelFunc, *error) {
+func startQueen(ctx context.Context, q *queen.Queen, tuiProg *tui.Program, objective string, forceLegacy bool) (context.CancelFunc, <-chan error) {
 	return startQueenWithFunc(ctx, q, tuiProg, func(runCtx context.Context) error {
 		if !forceLegacy && q.SupportsAgentMode() {
 			return q.RunAgent(runCtx, objective)
@@ -255,7 +256,7 @@ func startQueen(ctx context.Context, q *queen.Queen, tuiProg *tui.Program, objec
 }
 
 // startQueenResume runs the Queen in resume mode in a goroutine and sends Done when finished.
-func startQueenResume(ctx context.Context, q *queen.Queen, tuiProg *tui.Program, sessionID, objective string, forceLegacy bool) (context.CancelFunc, *error) {
+func startQueenResume(ctx context.Context, q *queen.Queen, tuiProg *tui.Program, sessionID, objective string, forceLegacy bool) (context.CancelFunc, <-chan error) {
 	return startQueenWithFunc(ctx, q, tuiProg, func(runCtx context.Context) error {
 		if !forceLegacy && q.SupportsAgentMode() {
 			return q.RunAgentResume(runCtx, sessionID)
@@ -265,9 +266,9 @@ func startQueenResume(ctx context.Context, q *queen.Queen, tuiProg *tui.Program,
 }
 
 // startQueenWithFunc runs the given function in a goroutine with output polling and sends Done when finished.
-func startQueenWithFunc(ctx context.Context, q *queen.Queen, tuiProg *tui.Program, runFunc func(context.Context) error) (context.CancelFunc, *error) {
+func startQueenWithFunc(ctx context.Context, q *queen.Queen, tuiProg *tui.Program, runFunc func(context.Context) error) (context.CancelFunc, <-chan error) {
 	runCtx, cancel := context.WithCancel(ctx)
-	var runErr error
+	errCh := make(chan error, 1)
 
 	go pollWorkerOutputs(runCtx, q, tuiProg)
 
@@ -275,16 +276,17 @@ func startQueenWithFunc(ctx context.Context, q *queen.Queen, tuiProg *tui.Progra
 		defer cancel()
 		defer q.Close()
 
-		runErr = runFunc(runCtx)
+		err := runFunc(runCtx)
 
-		if runErr != nil {
-			tuiProg.SendDone(false, "", runErr.Error())
+		if err != nil {
+			tuiProg.SendDone(false, "", err.Error())
 		} else {
 			tuiProg.SendDone(true, "Objective complete", "")
 		}
+		errCh <- err
 	}()
 
-	return cancel, &runErr
+	return cancel, errCh
 }
 
 func runWithTUI(ctx context.Context, cfg *config.Config, objective, tasksFile string, forceLegacy bool) error {
@@ -314,15 +316,14 @@ func runWithTUI(ctx context.Context, cfg *config.Config, objective, tasksFile st
 		q.SetTasks(tasks)
 	}
 
-	cancel, runErr := startQueen(ctx, q, tuiProg, objective, forceLegacy)
+	cancel, errCh := startQueen(ctx, q, tuiProg, objective, forceLegacy)
 
 	if _, err := tuiProg.Run(); err != nil {
 		cancel()
-		q.Close()
 		return fmt.Errorf("TUI error: %w", err)
 	}
 
-	return *runErr
+	return <-errCh
 }
 
 func runPlain(ctx context.Context, cmd *cli.Command, cfg *config.Config, objective, tasksFile string, forceLegacy bool) error {
@@ -484,8 +485,11 @@ func runJSON(ctx context.Context, cmd *cli.Command, cfg *config.Config, objectiv
 		_ = jsonWriter.WriteWorkerSpawned(msg.WorkerID, msg.TaskID)
 	})
 	q.Bus().Subscribe(bus.MsgWorkerCompleted, func(msg bus.Message) {
-		if t, ok := q.Bus().History(1)[0].Payload.(*task.Task); ok {
-			_ = jsonWriter.WriteTaskCompleted(t)
+		history := q.Bus().History(1)
+		if len(history) > 0 {
+			if t, ok := history[0].Payload.(*task.Task); ok {
+				_ = jsonWriter.WriteTaskCompleted(t)
+			}
 		}
 		// Capture final worker output
 		for wid, out := range q.ActiveWorkerOutputs() {
@@ -664,15 +668,14 @@ func runResumeTUI(ctx context.Context, cfg *config.Config, sessionID, objective 
 
 	subscribeBusEvents(q, tuiProg)
 
-	cancel, runErr := startQueenResume(ctx, q, tuiProg, sessionID, objective, forceLegacy)
+	cancel, errCh := startQueenResume(ctx, q, tuiProg, sessionID, objective, forceLegacy)
 
 	if _, err := tuiProg.Run(); err != nil {
 		cancel()
-		q.Close()
 		return fmt.Errorf("TUI error: %w", err)
 	}
 
-	return *runErr
+	return <-errCh
 }
 
 func runResumePlain(ctx context.Context, cmd *cli.Command, cfg *config.Config, sessionID, objective string, forceLegacy bool) error {

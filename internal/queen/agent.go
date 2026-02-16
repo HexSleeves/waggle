@@ -338,6 +338,9 @@ func (q *Queen) RunAgentResume(ctx context.Context, sessionID string) error {
 		}
 	}
 
+	if err := q.db.UpdateSessionStatus(ctx, q.sessionID, "failed"); err != nil {
+		q.logger.Printf("⚠ Warning: failed to update session status: %v", err)
+	}
 	return fmt.Errorf("queen exceeded max turns (%d)", maxTurns)
 }
 

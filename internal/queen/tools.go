@@ -660,6 +660,10 @@ func (q *Queen) processWorkerResults(ctx context.Context) {
 			// Use shared failure handling for error classification, retry, and backoff
 			q.handleTaskFailure(ctx, taskID, workerID, result)
 		}
+
+		q.mu.Lock()
+		delete(q.assignments, workerID)
+		q.mu.Unlock()
 	}
 }
 

@@ -665,9 +665,18 @@ func TestListSessions(t *testing.T) {
 		t.Errorf("Expected third session s1, got %s", sessions[2].ID)
 	}
 
-	// Verify s3 (no tasks)
+	// Verify s3 (no tasks) — all counters must be 0, not NULL
 	if sessions[0].TotalTasks != 0 {
 		t.Errorf("s3: expected 0 total tasks, got %d", sessions[0].TotalTasks)
+	}
+	if sessions[0].CompletedTasks != 0 {
+		t.Errorf("s3: expected 0 completed, got %d", sessions[0].CompletedTasks)
+	}
+	if sessions[0].FailedTasks != 0 {
+		t.Errorf("s3: expected 0 failed, got %d", sessions[0].FailedTasks)
+	}
+	if sessions[0].PendingTasks != 0 {
+		t.Errorf("s3: expected 0 pending, got %d", sessions[0].PendingTasks)
 	}
 
 	// Verify s2 counts
