@@ -1067,3 +1067,122 @@ func TestReaderWriterSeparation(t *testing.T) {
 		t.Errorf("Expected sequence_id 1, got %d", msgs[0].SequenceID)
 	}
 }
+
+func TestLoadBlackboard_Empty(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := OpenDB(tmpDir)
+	if err != nil {
+		t.Fatalf("OpenDB failed: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if err := db.CreateSession(ctx, "session-bb-empty", "Test"); err != nil {
+		t.Fatal(err)
+	}
+
+	rows, err := db.LoadBlackboard(ctx, "session-bb-empty")
+	if err != nil {
+		t.Fatalf("LoadBlackboard failed: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("Expected 0 blackboard entries, got %d", len(rows))
+	}
+}
+
+func TestLoadBlackboard_MultipleEntries(t *testing.T) {
+	tmpDir := t.TempDir()
+	db, err := OpenDB(tmpDir)
+	if err != nil {
+		t.Fatalf("OpenDB failed: %v", err)
+	}
+	defer db.Close()
+
+	ctx := context.Background()
+	if err := db.CreateSession(ctx, "session-bb-multi", "Test"); err != nil {
+		t.Fatal(err)
+	}
+
+	// Post 3 entries
+	entries := []struct {
+		key, value, postedBy, taskID, tags string
+	}{
+		{"result-task-1", "output from task 1", "worker-1", "task-1", "result,code"},
+		{"result-task-2", "output from task 2", "worker-2", "task-2", "result,test"},
+		{"config", "{\"debug\":true}", "worker-1", "task-1", "config"},
+	}
+
+	for _, e := range entries {
+		if err := db.PostBlackboard(ctx, "session-bb-multi", e.key, e.value, e.postedBy, e.taskID, e.tags); err != nil {
+			t.Fatalf("PostBlackboard(%s) failed: %v", e.key, err)
+		}
+	}
+
+	rows, err := db.LoadBlackboard(ctx, "session-bb-multi")
+	if err != nil {
+		t.Fatalf("LoadBlackboard failed: %v", err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("Expected 3 blackboard entries, got %d", len(rows))
+	}
+
+	// Build map for easier lookup
+	byKey := make(map[string]BlackboardRow)
+	for _, r := range rows {
+		byKey[r.Key] = r
+	}
+
+	// Verify entry 1
+	if r, ok := byKey["result-task-1"]; !ok {
+		t.Error("Missing entry result-task-1")
+	} else {
+		if r.Value != "output from task 1" {
+			t.Errorf("result-task-1 value: got %q", r.Value)
+		}
+		if r.PostedBy != "worker-1" {
+			t.Errorf("result-task-1 posted_by: got %q", r.PostedBy)
+		}
+		if r.TaskID != "task-1" {
+			t.Errorf("result-task-1 task_id: got %q", r.TaskID)
+		}
+		if r.Tags != "result,code" {
+			t.Errorf("result-task-1 tags: got %q", r.Tags)
+		}
+	}
+
+	// Verify entry 2
+	if r, ok := byKey["result-task-2"]; !ok {
+		t.Error("Missing entry result-task-2")
+	} else {
+		if r.Value != "output from task 2" {
+			t.Errorf("result-task-2 value: got %q", r.Value)
+		}
+		if r.PostedBy != "worker-2" {
+			t.Errorf("result-task-2 posted_by: got %q", r.PostedBy)
+		}
+	}
+
+	// Verify entry 3
+	if r, ok := byKey["config"]; !ok {
+		t.Error("Missing entry config")
+	} else {
+		if r.Value != "{\"debug\":true}" {
+			t.Errorf("config value: got %q", r.Value)
+		}
+		if r.Tags != "config" {
+			t.Errorf("config tags: got %q", r.Tags)
+		}
+	}
+
+	// Verify cross-session isolation: different session should return empty
+	if err := db.CreateSession(ctx, "session-bb-other", "Other"); err != nil {
+		t.Fatal(err)
+	}
+	otherRows, err := db.LoadBlackboard(ctx, "session-bb-other")
+	if err != nil {
+		t.Fatalf("LoadBlackboard for other session failed: %v", err)
+	}
+	if len(otherRows) != 0 {
+		t.Errorf("Expected 0 entries for other session, got %d", len(otherRows))
+	}
+}

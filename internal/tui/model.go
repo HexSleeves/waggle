@@ -19,6 +19,7 @@ type viewMode int
 const (
 	viewQueen viewMode = iota
 	viewWorker
+	viewDAG
 )
 
 type inputState int
@@ -31,12 +32,13 @@ const (
 
 // TaskInfo tracks task state for display.
 type TaskInfo struct {
-	ID       string
-	Title    string
-	Type     string
-	Status   string
-	WorkerID string
-	Order    int // insertion order
+	ID        string
+	Title     string
+	Type      string
+	Status    string
+	WorkerID  string
+	DependsOn []string
+	Order     int // insertion order
 }
 
 // WorkerInfo tracks worker state for display.
@@ -56,6 +58,11 @@ type Model struct {
 	tasks      []TaskInfo     // ordered task list
 	taskMap    map[string]int // task ID -> index in tasks slice
 	workers    map[string]*WorkerInfo
+
+	// Progress / ETA tracking
+	taskStartTimes      map[string]time.Time // task ID -> when it started running
+	taskCompletionTimes []time.Duration      // how long each completed task took
+	firstTaskStarted    time.Time            // when the very first task began
 
 	// State
 	turn      int
@@ -94,32 +101,34 @@ type queenLine struct {
 // New creates a new TUI model with a pre-set objective.
 func New(objective string, maxTurns int) Model {
 	return Model{
-		objective:     objective,
-		queenLines:    []queenLine{},
-		tasks:         []TaskInfo{},
-		taskMap:       make(map[string]int),
-		workers:       make(map[string]*WorkerInfo),
-		maxTurn:       maxTurns,
-		startTime:     time.Now(),
-		workerOutputs: make(map[string][]string),
-		workerTasks:   make(map[string]string),
-		input:         inputNone,
+		objective:      objective,
+		queenLines:     []queenLine{},
+		tasks:          []TaskInfo{},
+		taskMap:        make(map[string]int),
+		workers:        make(map[string]*WorkerInfo),
+		taskStartTimes: make(map[string]time.Time),
+		maxTurn:        maxTurns,
+		startTime:      time.Now(),
+		workerOutputs:  make(map[string][]string),
+		workerTasks:    make(map[string]string),
+		input:          inputNone,
 	}
 }
 
 // NewInteractive creates a TUI model that prompts for an objective.
 func NewInteractive(maxTurns int, objectiveCh chan<- string) Model {
 	return Model{
-		queenLines:    []queenLine{},
-		tasks:         []TaskInfo{},
-		taskMap:       make(map[string]int),
-		workers:       make(map[string]*WorkerInfo),
-		maxTurn:       maxTurns,
-		startTime:     time.Now(),
-		workerOutputs: make(map[string][]string),
-		workerTasks:   make(map[string]string),
-		input:         inputWaiting,
-		objectiveCh:   objectiveCh,
+		queenLines:     []queenLine{},
+		tasks:          []TaskInfo{},
+		taskMap:        make(map[string]int),
+		workers:        make(map[string]*WorkerInfo),
+		taskStartTimes: make(map[string]time.Time),
+		maxTurn:        maxTurns,
+		startTime:      time.Now(),
+		workerOutputs:  make(map[string][]string),
+		workerTasks:    make(map[string]string),
+		input:          inputWaiting,
+		objectiveCh:    objectiveCh,
 	}
 }
 
@@ -182,6 +191,13 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "0":
 			m.viewMode = viewQueen
 			m.queenScroll = 0
+		case "d":
+			if m.viewMode == viewDAG {
+				m.viewMode = viewQueen
+				m.queenScroll = 0
+			} else {
+				m.viewMode = viewDAG
+			}
 		case "right", "l":
 			if m.viewMode == viewWorker {
 				m.cycleView(1)
@@ -434,16 +450,39 @@ func (m *Model) updateTask(msg TaskUpdateMsg) {
 		if msg.WorkerID != "" {
 			m.tasks[idx].WorkerID = msg.WorkerID
 		}
+		if len(msg.DependsOn) > 0 {
+			m.tasks[idx].DependsOn = msg.DependsOn
+		}
 	} else {
 		m.taskMap[msg.ID] = len(m.tasks)
 		m.tasks = append(m.tasks, TaskInfo{
-			ID:       msg.ID,
-			Title:    msg.Title,
-			Type:     msg.Type,
-			Status:   msg.Status,
-			WorkerID: msg.WorkerID,
-			Order:    len(m.tasks),
+			ID:        msg.ID,
+			Title:     msg.Title,
+			Type:      msg.Type,
+			Status:    msg.Status,
+			WorkerID:  msg.WorkerID,
+			DependsOn: msg.DependsOn,
+			Order:     len(m.tasks),
 		})
+	}
+
+	// Track task timing for ETA calculation
+	now := time.Now()
+	switch msg.Status {
+	case "running":
+		if m.firstTaskStarted.IsZero() {
+			m.firstTaskStarted = now
+		}
+		if _, started := m.taskStartTimes[msg.ID]; !started {
+			m.taskStartTimes[msg.ID] = now
+		}
+	case "complete":
+		if started, ok := m.taskStartTimes[msg.ID]; ok {
+			m.taskCompletionTimes = append(m.taskCompletionTimes, now.Sub(started))
+			delete(m.taskStartTimes, msg.ID)
+		}
+	case "failed":
+		delete(m.taskStartTimes, msg.ID)
 	}
 }
 
@@ -467,4 +506,72 @@ func (m *Model) updateWorker(msg WorkerUpdateMsg) {
 			m.workerTasks[msg.ID] = msg.TaskID
 		}
 	}
+}
+
+// taskStats returns (completed, running, failed, total) counts.
+func (m Model) taskStats() (done, running, failed, total int) {
+	total = len(m.tasks)
+	for _, t := range m.tasks {
+		switch t.Status {
+		case "complete":
+			done++
+		case "running":
+			running++
+		case "failed":
+			failed++
+		}
+	}
+	return
+}
+
+// estimateETA returns the estimated time remaining, or zero if unavailable.
+func (m Model) estimateETA() time.Duration {
+	if len(m.taskCompletionTimes) == 0 {
+		return 0
+	}
+	done, _, _, total := m.taskStats()
+	remaining := total - done
+	if remaining <= 0 {
+		return 0
+	}
+	var sum time.Duration
+	for _, d := range m.taskCompletionTimes {
+		sum += d
+	}
+	avg := sum / time.Duration(len(m.taskCompletionTimes))
+	return avg * time.Duration(remaining)
+}
+
+// formatETA formats a duration into a concise human-readable string.
+func formatETA(d time.Duration) string {
+	if d <= 0 {
+		return ""
+	}
+	d = d.Round(time.Second)
+	if d < time.Minute {
+		return fmt.Sprintf("~%ds remaining", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		m := int(d.Minutes())
+		s := int(d.Seconds()) % 60
+		if s > 0 {
+			return fmt.Sprintf("~%dm%ds remaining", m, s)
+		}
+		return fmt.Sprintf("~%dm remaining", m)
+	}
+	h := int(d.Hours())
+	min := int(d.Minutes()) % 60
+	return fmt.Sprintf("~%dh%dm remaining", h, min)
+}
+
+// progressBar renders a text progress bar like ██████░░░░ using the given width.
+func progressBar(done, total, width int) string {
+	if total == 0 || width <= 0 {
+		return strings.Repeat("░", width)
+	}
+	filled := width * done / total
+	if filled > width {
+		filled = width
+	}
+	return strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
 }

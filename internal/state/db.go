@@ -579,6 +579,41 @@ func (s *DB) ReadBlackboard(ctx context.Context, sessionID, key string) (string,
 	return value, err
 }
 
+// BlackboardRow represents a single blackboard entry loaded from the database.
+type BlackboardRow struct {
+	Key      string
+	Value    string
+	PostedBy string
+	TaskID   string
+	Tags     string
+}
+
+// LoadBlackboard loads all blackboard entries for a session.
+func (s *DB) LoadBlackboard(ctx context.Context, sessionID string) ([]BlackboardRow, error) {
+	rows, err := s.reader.QueryContext(ctx,
+		`SELECT key, value, posted_by, task_id, tags FROM blackboard WHERE session_id = ?`,
+		sessionID,
+	)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var entries []BlackboardRow
+	for rows.Next() {
+		var bb BlackboardRow
+		var postedBy, taskID, tags sql.NullString
+		if err := rows.Scan(&bb.Key, &bb.Value, &postedBy, &taskID, &tags); err != nil {
+			return nil, err
+		}
+		bb.PostedBy = postedBy.String
+		bb.TaskID = taskID.String
+		bb.Tags = tags.String
+		entries = append(entries, bb)
+	}
+	return entries, rows.Err()
+}
+
 // --- KV (general purpose) ---
 
 func (s *DB) SetKV(ctx context.Context, key, value string) error {

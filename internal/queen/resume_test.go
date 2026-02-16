@@ -839,3 +839,118 @@ func TestResumeSession_CompletedTasksNotReRun(t *testing.T) {
 
 	t.Log("✅ Completed tasks not re-run after resume")
 }
+
+// TestResumeSession_RestoresBlackboard verifies that blackboard entries
+// persisted in the DB are restored into the in-memory blackboard on resume.
+func TestResumeSession_RestoresBlackboard(t *testing.T) {
+	tempDir := t.TempDir()
+	hiveDir := filepath.Join(tempDir, ".hive")
+	if err := os.MkdirAll(hiveDir, 0755); err != nil {
+		t.Fatalf("create hive dir: %v", err)
+	}
+
+	logger := log.New(os.Stderr, "[TEST] ", log.LstdFlags)
+
+	cfg := &config.Config{
+		ProjectDir: tempDir,
+		HiveDir:    ".hive",
+		Queen: config.QueenConfig{
+			Provider:      "",
+			MaxIterations: 10,
+		},
+		Workers: config.WorkerConfig{
+			MaxParallel:    2,
+			MaxRetries:     2,
+			DefaultTimeout: 5 * time.Minute,
+			DefaultAdapter: "exec",
+		},
+		Adapters: map[string]config.AdapterConfig{
+			"exec": {Command: "echo"},
+		},
+		Safety: config.SafetyConfig{
+			AllowedPaths: []string{"."},
+			MaxFileSize:  10 * 1024 * 1024,
+		},
+	}
+
+	// Set up session with blackboard entries in DB
+	db, err := state.OpenDB(hiveDir)
+	if err != nil {
+		t.Fatalf("open db: %v", err)
+	}
+
+	sessionID := fmt.Sprintf("session-bb-%d", time.Now().UnixNano())
+	ctx := context.Background()
+	if err := db.CreateSession(ctx, sessionID, "Blackboard resume test"); err != nil {
+		t.Fatalf("create session: %v", err)
+	}
+
+	// Insert a task (needed for valid session)
+	if err := db.InsertTask(ctx, sessionID, state.TaskRow{
+		ID: "task-1", Type: "code", Status: "pending",
+		Priority: 1, Title: "Task 1", Description: "Do work",
+		MaxRetries: 2,
+	}); err != nil {
+		t.Fatalf("insert task: %v", err)
+	}
+
+	// Post blackboard entries
+	if err := db.PostBlackboard(ctx, sessionID, "result-task-a", "output A", "worker-1", "task-a", "result,code"); err != nil {
+		t.Fatalf("post blackboard: %v", err)
+	}
+	if err := db.PostBlackboard(ctx, sessionID, "config-key", "{\"debug\":true}", "worker-2", "task-b", "config"); err != nil {
+		t.Fatalf("post blackboard: %v", err)
+	}
+
+	db.Close()
+
+	// Create Queen and resume
+	q, err := New(cfg, logger)
+	if err != nil {
+		t.Fatalf("create queen: %v", err)
+	}
+	defer q.Close()
+
+	if _, err := q.ResumeSession(ctx, sessionID); err != nil {
+		t.Fatalf("resume session: %v", err)
+	}
+
+	// Verify blackboard entries were restored
+	entry1, ok := q.board.Read("result-task-a")
+	if !ok {
+		t.Fatal("blackboard entry 'result-task-a' not found after resume")
+	}
+	if entry1.Value != "output A" {
+		t.Errorf("result-task-a value: want %q, got %q", "output A", entry1.Value)
+	}
+	if entry1.PostedBy != "worker-1" {
+		t.Errorf("result-task-a posted_by: want %q, got %q", "worker-1", entry1.PostedBy)
+	}
+	if entry1.TaskID != "task-a" {
+		t.Errorf("result-task-a task_id: want %q, got %q", "task-a", entry1.TaskID)
+	}
+
+	entry2, ok := q.board.Read("config-key")
+	if !ok {
+		t.Fatal("blackboard entry 'config-key' not found after resume")
+	}
+	if entry2.Value != "{\"debug\":true}" {
+		t.Errorf("config-key value: want %q, got %q", "{\"debug\":true}", entry2.Value)
+	}
+
+	// Verify tags were restored
+	if len(entry1.Tags) != 2 || entry1.Tags[0] != "result" || entry1.Tags[1] != "code" {
+		t.Errorf("result-task-a tags: want [result code], got %v", entry1.Tags)
+	}
+	if len(entry2.Tags) != 1 || entry2.Tags[0] != "config" {
+		t.Errorf("config-key tags: want [config], got %v", entry2.Tags)
+	}
+
+	// Verify total blackboard size
+	allEntries := q.board.All()
+	if len(allEntries) != 2 {
+		t.Errorf("expected 2 blackboard entries, got %d", len(allEntries))
+	}
+
+	t.Log("✅ Blackboard entries correctly restored on resume")
+}

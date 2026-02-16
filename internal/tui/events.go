@@ -22,11 +22,12 @@ type ToolResultMsg struct {
 
 // TaskUpdateMsg is a task status change.
 type TaskUpdateMsg struct {
-	ID       string
-	Title    string
-	Type     string
-	Status   string
-	WorkerID string
+	ID        string
+	Title     string
+	Type      string
+	Status    string
+	WorkerID  string
+	DependsOn []string
 }
 
 // WorkerUpdateMsg is a worker status change.

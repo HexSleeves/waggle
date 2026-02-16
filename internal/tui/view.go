@@ -2,6 +2,7 @@ package tui
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -50,6 +51,8 @@ func (m Model) View() string {
 	switch m.viewMode {
 	case viewWorker:
 		mainPanel = m.renderWorkerOutputPanel(innerW, queenH)
+	case viewDAG:
+		mainPanel = m.renderDAGPanel(innerW, queenH)
 	default:
 		mainPanel = m.renderQueenPanel(innerW, queenH)
 	}
@@ -267,24 +270,17 @@ func (m Model) renderTaskPanel(w, h int) string {
 	}
 
 	// Stats
-	done, running, failed := 0, 0, 0
-	for _, t := range m.tasks {
-		switch t.Status {
-		case "complete":
-			done++
-		case "running":
-			running++
-		case "failed":
-			failed++
-		}
-	}
+	done, running, failed, total := m.taskStats()
 
-	stats := subtleStyle.Render(fmt.Sprintf("  %d/%d", done, len(m.tasks)))
+	stats := subtleStyle.Render(fmt.Sprintf("  %d/%d complete", done, total))
 	if running > 0 {
-		stats += lipgloss.NewStyle().Foreground(colorBlue).Render(fmt.Sprintf(" · %d🔄", running))
+		stats += lipgloss.NewStyle().Foreground(colorBlue).Render(fmt.Sprintf(" · %d running", running))
 	}
 	if failed > 0 {
-		stats += errorStyle.Render(fmt.Sprintf(" · %d❌", failed))
+		stats += errorStyle.Render(fmt.Sprintf(" · %d failed", failed))
+	}
+	if eta := m.estimateETA(); eta > 0 && !m.done {
+		stats += subtleStyle.Render(" · " + formatETA(eta))
 	}
 
 	// Column widths
@@ -373,6 +369,23 @@ func (m Model) renderStatusBar(w int) string {
 		left = "🐝 Waggle"
 	}
 
+	// Centre: progress bar (only when tasks exist and not done)
+	var centre string
+	done, _, _, total := m.taskStats()
+	if total > 0 && !m.done {
+		pct := 0
+		if total > 0 {
+			pct = 100 * done / total
+		}
+		barW := 12
+		bar := progressBar(done, total, barW)
+		centre = fmt.Sprintf("[%d/%d %s %d%%]", done, total, bar, pct)
+		eta := m.estimateETA()
+		if eta > 0 {
+			centre += "  " + formatETA(eta)
+		}
+	}
+
 	// Navigation hint
 	var navHint string
 	if len(m.workerOrder) > 0 {
@@ -387,16 +400,184 @@ func (m Model) renderStatusBar(w int) string {
 	workerCount := len(m.workers)
 	right := fmt.Sprintf("%d workers · %s%s", workerCount, elapsed, navHint)
 
-	// Spacing
+	// Spacing: distribute between left-centre and centre-right
 	leftW := lipgloss.Width(left)
+	centreW := lipgloss.Width(centre)
 	rightW := lipgloss.Width(right)
-	gap := w - leftW - rightW - 2
-	if gap < 1 {
-		gap = 1
+	totalContent := leftW + centreW + rightW
+	spare := w - totalContent - 2
+	if spare < 2 {
+		spare = 2
+	}
+	var gap1, gap2 int
+	if centreW > 0 {
+		gap1 = spare / 2
+		gap2 = spare - gap1
+		if gap1 < 1 {
+			gap1 = 1
+		}
+		if gap2 < 1 {
+			gap2 = 1
+		}
+	} else {
+		gap1 = spare
+		gap2 = 0
 	}
 
-	bar := left + strings.Repeat(" ", gap) + subtleStyle.Render(right)
-	return statusBar.Width(w - 2).Render(bar)
+	var statusLine string
+	if centreW > 0 {
+		statusLine = left + strings.Repeat(" ", gap1) +
+			subtleStyle.Render(centre) +
+			strings.Repeat(" ", gap2) +
+			subtleStyle.Render(right)
+	} else {
+		statusLine = left + strings.Repeat(" ", gap1) + subtleStyle.Render(right)
+	}
+	return statusBar.Width(w - 2).Render(statusLine)
+}
+
+func (m Model) renderDAGPanel(w, h int) string {
+	title := titleStyle.Render("🔀 Task DAG")
+	title += subtleStyle.Render("  d:toggle")
+
+	visibleH := h - 1
+	if visibleH < 1 {
+		visibleH = 1
+	}
+
+	if len(m.tasks) == 0 {
+		content := title + "\n" + subtleStyle.Render("  No tasks yet...")
+		return queenBorder.Width(w).Render(content)
+	}
+
+	// Build a mini task graph from TaskInfo.
+	ascii := m.buildTaskDAGASCII(w - 4)
+
+	lines := strings.Split(ascii, "\n")
+	var rendered []string
+	for _, line := range lines {
+		rendered = append(rendered, queenTextStyle.Render(line))
+	}
+
+	// Trim or pad to fit.
+	if len(rendered) > visibleH {
+		rendered = rendered[:visibleH]
+	}
+	for len(rendered) < visibleH {
+		rendered = append(rendered, "")
+	}
+
+	content := title + "\n" + strings.Join(rendered, "\n")
+	return queenBorder.Width(w).Render(content)
+}
+
+// buildTaskDAGASCII builds an ASCII DAG from the current task list.
+func (m Model) buildTaskDAGASCII(width int) string {
+	if len(m.tasks) == 0 {
+		return "(no tasks)"
+	}
+
+	if width <= 0 {
+		width = 80
+	}
+
+	// Build a lookup for computing depths.
+	type miniTask struct {
+		id        string
+		title     string
+		status    string
+		dependsOn []string
+	}
+
+	tasksByID := make(map[string]*miniTask, len(m.tasks))
+	for i := range m.tasks {
+		t := &m.tasks[i]
+		tasksByID[t.ID] = &miniTask{
+			id:        t.ID,
+			title:     t.Title,
+			status:    t.Status,
+			dependsOn: t.DependsOn,
+		}
+	}
+
+	// Compute depths using BFS.
+	inDeg := make(map[string]int, len(tasksByID))
+	for id := range tasksByID {
+		inDeg[id] = 0
+	}
+	children := make(map[string][]string)
+	for _, t := range tasksByID {
+		for _, depID := range t.dependsOn {
+			if _, ok := tasksByID[depID]; ok {
+				inDeg[t.id]++
+				children[depID] = append(children[depID], t.id)
+			}
+		}
+	}
+
+	depth := make(map[string]int)
+	var queue []string
+	for id, deg := range inDeg {
+		if deg == 0 {
+			queue = append(queue, id)
+			depth[id] = 0
+		}
+	}
+	sort.Strings(queue)
+
+	for i := 0; i < len(queue); i++ {
+		id := queue[i]
+		for _, childID := range children[id] {
+			newD := depth[id] + 1
+			if d, ok := depth[childID]; !ok || newD > d {
+				depth[childID] = newD
+			}
+			inDeg[childID]--
+			if inDeg[childID] == 0 {
+				queue = append(queue, childID)
+			}
+		}
+	}
+
+	// Group by depth.
+	maxDepth := 0
+	grouped := make(map[int][]string)
+	for id, d := range depth {
+		grouped[d] = append(grouped[d], id)
+		if d > maxDepth {
+			maxDepth = d
+		}
+	}
+
+	var b strings.Builder
+	for d := 0; d <= maxDepth; d++ {
+		ids := grouped[d]
+		sort.Strings(ids)
+
+		if d > 0 {
+			b.WriteString("    |\n")
+			b.WriteString("    v\n")
+		}
+
+		for _, id := range ids {
+			t := tasksByID[id]
+			icon := statusIcon(t.status)
+			title := t.title
+			if title == "" {
+				title = id
+			}
+			maxTitle := width - 8
+			if maxTitle < 10 {
+				maxTitle = 10
+			}
+			if len(title) > maxTitle {
+				title = title[:maxTitle-1] + "…"
+			}
+			b.WriteString(fmt.Sprintf("  [%s %s]\n", icon, title))
+		}
+	}
+
+	return strings.TrimRight(b.String(), "\n")
 }
 
 // wrapText wraps a string to fit within maxWidth display columns,

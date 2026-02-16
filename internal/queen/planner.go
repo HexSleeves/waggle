@@ -62,7 +62,51 @@ func (q *Queen) plan(ctx context.Context) error {
 		return nil
 	}
 
-	// Use AI adapter to decompose the objective
+	// If Queen has her own LLM, use it directly for planning (no worker needed)
+	if q.llm != nil {
+		return q.planWithLLM(ctx)
+	}
+
+	// Fall back to worker-based planning
+	return q.planWithWorker(ctx)
+}
+
+// planWithLLM uses the Queen's own LLM client to decompose the objective,
+// avoiding the need to spawn a worker bee for planning.
+func (q *Queen) planWithLLM(ctx context.Context) error {
+	const systemPrompt = "You are a task planning agent. Output ONLY a JSON array of tasks."
+	planPrompt := q.buildPlanPrompt()
+
+	response, err := q.llm.Chat(ctx, systemPrompt, planPrompt)
+	if err != nil {
+		// Fall back to worker-based planning if LLM call fails
+		q.logVerbose("  ⚠ Queen LLM planning failed: %v — falling back to worker", err)
+		return q.planWithWorker(ctx)
+	}
+
+	tasks, err := q.parsePlanOutput(response)
+	if err != nil {
+		q.logVerbose("  ⚠ Failed to parse LLM plan output: %v — falling back to worker", err)
+		return q.planWithWorker(ctx)
+	}
+
+	for _, t := range tasks {
+		q.persistNewTask(ctx, t)
+		q.logVerbose("  📌 Task: [%s] %s", t.Type, t.Title)
+	}
+
+	q.ctx.Add("assistant", fmt.Sprintf("Plan created with %d tasks", len(tasks)))
+	return nil
+}
+
+// planWithWorker spawns a worker bee to decompose the objective using an AI adapter.
+// This is the fallback path when the Queen's own LLM is not available or fails.
+func (q *Queen) planWithWorker(ctx context.Context) error {
+	if q.router == nil {
+		return fmt.Errorf("no task router configured")
+	}
+	adapterName := q.router.Route(&task.Task{Type: task.TypeGeneric})
+
 	planTask := &task.Task{
 		ID:          nextTaskID("plan"),
 		Type:        task.TypeGeneric,
@@ -79,7 +123,6 @@ func (q *Queen) plan(ctx context.Context) error {
 		return fmt.Errorf("spawn planner: %w", err)
 	}
 
-	// Wait for planning to complete
 	if err := q.waitForWorker(ctx, bee, planTask.Timeout); err != nil {
 		return err
 	}
@@ -95,7 +138,6 @@ func (q *Queen) plan(ctx context.Context) error {
 		return fmt.Errorf("planning failed: %s", errMsg)
 	}
 
-	// Parse the plan output into tasks
 	tasks, err := q.parsePlanOutput(result.Output)
 	if err != nil {
 		return fmt.Errorf("parse plan: %w", err)
@@ -107,7 +149,6 @@ func (q *Queen) plan(ctx context.Context) error {
 	}
 
 	q.ctx.Add("assistant", fmt.Sprintf("Plan created with %d tasks", len(tasks)))
-
 	return nil
 }
 

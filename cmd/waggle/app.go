@@ -149,6 +149,16 @@ func newApp() *cli.Command {
 				},
 				Action: cmdSessions,
 			},
+			{
+				Name:      "dag",
+				Usage:     "Show task dependency graph",
+				ArgsUsage: "[session-id]",
+				Flags: []cli.Flag{
+					&cli.BoolFlag{Name: "ascii", Usage: "ASCII output (default is DOT/Graphviz)"},
+					&cli.StringFlag{Name: "session", Aliases: []string{"s"}, Usage: "Session ID"},
+				},
+				Action: cmdDAG,
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			// Default action: treat remaining args as objective (implicit run)
