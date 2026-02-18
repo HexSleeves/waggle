@@ -1,6 +1,6 @@
 # Waggle — TODO
 
-> Last updated: 2026-02-16. 90 commits, 12.4k source + 17.1k test lines.
+> Last updated: 2026-02-18. 90 commits, 12.4k source + 17.1k test lines.
 >
 > Improvements inspired by [Shelley](https://github.com/boldsoftware/shelley) agent architecture.
 
@@ -10,6 +10,7 @@
 - [x] 6 CLI adapters (claude, kimi, codex, opencode, gemini, exec) via shared `CLIAdapter`
 - [x] TUI dashboard with Queen/worker panel switching, live streaming output, scroll
 - [x] Interactive TUI mode (start without objective, prompt in TUI)
+- [x] Bubbles-first TUI migration: `viewport` (queen/worker/dag), `textinput`, `progress`, `spinner`, `help`, and tasks `table` with keyboard focus/select
 - [x] Per-worker timeout with kill (context.WithTimeout in Pool.Spawn)
 - [x] Worker output capped at 1MB (configurable `workers.max_output_size`)
 - [x] Parallel task execution (planning prompt + review→delegate shortcut)
@@ -24,6 +25,7 @@
 - [x] Adapter health check — `HealthCheck()` on `CLIAdapter`, `setupAdapters()` extracted, fails fast before planning
 - [x] `waggle sessions` — list past sessions with task counts, JSON output, `--remove` flag
 - [x] `waggle logs` — tail/stream event log with `--follow`, emoji icons, JSON output
+- [x] `waggle list` — list latest-session tasks with `--limit`, `--status`, `--type` + command tests
 - [x] Critical bug fixes (PR1) — 8 fixes: multi-word objectives, runJSON panic, runErr race, idempotent Close, assignment cleanup, max-iterations status, ListSessions NULL
 - [x] Task synchronization (PR2) — mutex on Task struct, 14 thread-safe getters/setters, all callers updated
 - [x] Conversation persistence (PR3) — persist full []ToolMessage, tool-aware compaction, legacy fallback

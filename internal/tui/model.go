@@ -5,7 +5,15 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/help"
+	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/progress"
+	"github.com/charmbracelet/bubbles/spinner"
+	"github.com/charmbracelet/bubbles/table"
+	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 )
 
 const (
@@ -29,6 +37,37 @@ const (
 	inputWaiting                   // waiting for user to type objective
 	inputRunning                   // objective submitted, queen running
 )
+
+type keyMap struct {
+	Quit       key.Binding
+	ScrollUp   key.Binding
+	ScrollDown key.Binding
+
+	NextView key.Binding
+	PrevView key.Binding
+
+	QueenView   key.Binding
+	ToggleDAG   key.Binding
+	WorkerLeft  key.Binding
+	WorkerRight key.Binding
+
+	TaskFocus  key.Binding
+	TaskSelect key.Binding
+
+	ToggleHelp key.Binding
+}
+
+func (k keyMap) ShortHelp() []key.Binding {
+	return []key.Binding{k.ScrollUp, k.ScrollDown, k.NextView, k.TaskFocus, k.ToggleHelp, k.Quit}
+}
+
+func (k keyMap) FullHelp() [][]key.Binding {
+	return [][]key.Binding{
+		{k.ScrollUp, k.ScrollDown, k.NextView, k.PrevView},
+		{k.WorkerLeft, k.WorkerRight, k.QueenView, k.ToggleDAG},
+		{k.TaskFocus, k.TaskSelect, k.ToggleHelp, k.Quit},
+	}
+}
 
 // TaskInfo tracks task state for display.
 type TaskInfo struct {
@@ -73,21 +112,27 @@ type Model struct {
 	finalMsg  string
 
 	// UI state
-	width         int
-	height        int
-	queenScroll   int // scroll offset for queen panel (from bottom)
-	viewMode      viewMode
-	viewWorkerID  string              // which worker we're viewing
-	workerOutputs map[string][]string // worker ID -> output lines
-	workerOrder   []string            // stable insertion-order list of worker IDs
-	workerScroll  int                 // scroll offset for worker view (from bottom)
-	workerTasks   map[string]string   // worker ID -> task title
+	width          int
+	height         int
+	queenViewport  viewport.Model
+	dagViewport    viewport.Model
+	viewMode       viewMode
+	viewWorkerID   string              // which worker we're viewing
+	workerOutputs  map[string][]string // worker ID -> output lines
+	workerOrder    []string            // stable insertion-order list of worker IDs
+	workerViewport viewport.Model
+	taskTable      table.Model
+	workerTasks    map[string]string // worker ID -> task title
 
 	// Input mode (interactive start)
-	input       inputState
-	inputText   string // text being typed
-	inputCursor int
-	objectiveCh chan<- string // channel to send objective when submitted
+	input          inputState
+	objectiveInput textinput.Model
+	objectiveCh    chan<- string // channel to send objective when submitted
+
+	keys     keyMap
+	help     help.Model
+	progress progress.Model
+	spinner  spinner.Model
 
 	// For tick
 	quitting bool
@@ -100,7 +145,7 @@ type queenLine struct {
 
 // New creates a new TUI model with a pre-set objective.
 func New(objective string, maxTurns int) Model {
-	return Model{
+	m := Model{
 		objective:      objective,
 		queenLines:     []queenLine{},
 		tasks:          []TaskInfo{},
@@ -113,11 +158,17 @@ func New(objective string, maxTurns int) Model {
 		workerTasks:    make(map[string]string),
 		input:          inputNone,
 	}
+	m.initBubbles()
+	m.queenViewport = viewport.New(1, 1)
+	m.dagViewport = viewport.New(1, 1)
+	m.workerViewport = viewport.New(1, 1)
+	m.refreshViewports(true, true)
+	return m
 }
 
 // NewInteractive creates a TUI model that prompts for an objective.
 func NewInteractive(maxTurns int, objectiveCh chan<- string) Model {
-	return Model{
+	m := Model{
 		queenLines:     []queenLine{},
 		tasks:          []TaskInfo{},
 		taskMap:        make(map[string]int),
@@ -130,16 +181,80 @@ func NewInteractive(maxTurns int, objectiveCh chan<- string) Model {
 		input:          inputWaiting,
 		objectiveCh:    objectiveCh,
 	}
+	m.initBubbles()
+	m.objectiveInput.Focus()
+	m.queenViewport = viewport.New(1, 1)
+	m.dagViewport = viewport.New(1, 1)
+	m.workerViewport = viewport.New(1, 1)
+	m.refreshViewports(true, true)
+	return m
 }
 
 func (m Model) Init() tea.Cmd {
-	return tea.Batch(tickCmd(), tea.WindowSize())
+	return tea.Batch(tickCmd(), tea.WindowSize(), func() tea.Msg { return m.spinner.Tick() })
 }
 
 func tickCmd() tea.Cmd {
 	return tea.Tick(tickInterval, func(t time.Time) tea.Msg {
 		return TickMsg{}
 	})
+}
+
+func (m *Model) initBubbles() {
+	m.keys = keyMap{
+		Quit:       key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
+		ScrollUp:   key.NewBinding(key.WithKeys("up", "k"), key.WithHelp("up/k", "scroll up")),
+		ScrollDown: key.NewBinding(key.WithKeys("down", "j"), key.WithHelp("down/j", "scroll down")),
+
+		NextView: key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next")),
+		PrevView: key.NewBinding(key.WithKeys("shift+tab"), key.WithHelp("shift+tab", "prev")),
+
+		QueenView:   key.NewBinding(key.WithKeys("0"), key.WithHelp("0", "queen")),
+		ToggleDAG:   key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "dag")),
+		WorkerLeft:  key.NewBinding(key.WithKeys("left", "h"), key.WithHelp("left/h", "worker prev")),
+		WorkerRight: key.NewBinding(key.WithKeys("right", "l"), key.WithHelp("right/l", "worker next")),
+		TaskFocus:   key.NewBinding(key.WithKeys("t"), key.WithHelp("t", "tasks focus")),
+		TaskSelect:  key.NewBinding(key.WithKeys("enter"), key.WithHelp("enter", "open worker")),
+
+		ToggleHelp: key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
+	}
+
+	m.help = help.New()
+	m.help.ShowAll = false
+
+	m.progress = progress.New(
+		progress.WithoutPercentage(),
+		progress.WithFillCharacters('█', '░'),
+		progress.WithSolidFill("#F5A623"),
+		progress.WithWidth(12),
+	)
+
+	m.spinner = spinner.New(spinner.WithSpinner(spinner.Line))
+	m.spinner.Style = subtleStyle
+
+	m.objectiveInput = textinput.New()
+	m.objectiveInput.Prompt = ""
+	m.objectiveInput.Placeholder = "What should Waggle do?"
+	m.objectiveInput.CharLimit = 4000
+	m.objectiveInput.Cursor.Style = subtleStyle.Copy().Reverse(true)
+	m.objectiveInput.Width = 60
+
+	m.taskTable = table.New(
+		table.WithColumns([]table.Column{
+			{Title: "S", Width: 3},
+			{Title: "Task", Width: 20},
+			{Title: "Worker", Width: 12},
+		}),
+		table.WithRows([]table.Row{}),
+		table.WithWidth(20),
+		table.WithHeight(4),
+	)
+	m.taskTable.Blur()
+	taskTableStyles := table.DefaultStyles()
+	taskTableStyles.Header = subtleStyle.Copy().Bold(true).Padding(0, 0)
+	taskTableStyles.Cell = lipgloss.NewStyle().Padding(0, 0)
+	taskTableStyles.Selected = lipgloss.NewStyle().Foreground(colorBlue).Bold(true)
+	m.taskTable.SetStyles(taskTableStyles)
 }
 
 func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -151,65 +266,77 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m.handleInputKey(msg)
 		}
 
-		switch msg.String() {
-		case "q", "ctrl+c":
+		if m.taskTable.Focused() {
+			switch {
+			case key.Matches(msg, m.keys.TaskFocus) || msg.String() == "esc":
+				m.taskTable.Blur()
+				return m, nil
+			case key.Matches(msg, m.keys.TaskSelect):
+				m.openSelectedTaskWorker()
+				return m, nil
+			}
+
+			var cmd tea.Cmd
+			m.taskTable, cmd = m.taskTable.Update(msg)
+			return m, cmd
+		}
+
+		switch {
+		case key.Matches(msg, m.keys.Quit):
 			m.quitting = true
 			return m, tea.Quit
-		case "up", "k":
+		case key.Matches(msg, m.keys.ScrollUp):
 			if m.viewMode == viewWorker {
-				lines := m.workerOutputs[m.viewWorkerID]
-				maxScroll := len(lines) - m.visibleHeight()
-				if maxScroll < 0 {
-					maxScroll = 0
-				}
-				if m.workerScroll < maxScroll {
-					m.workerScroll++
-				}
+				m.workerViewport.ScrollUp(1)
+			} else if m.viewMode == viewDAG {
+				m.dagViewport.ScrollUp(1)
 			} else {
-				maxScroll := len(m.queenLines) - m.visibleHeight()
-				if maxScroll < 0 {
-					maxScroll = 0
-				}
-				if m.queenScroll < maxScroll {
-					m.queenScroll++
-				}
+				m.queenViewport.ScrollUp(1)
 			}
-		case "down", "j":
+		case key.Matches(msg, m.keys.ScrollDown):
 			if m.viewMode == viewWorker {
-				if m.workerScroll > 0 {
-					m.workerScroll--
-				}
+				m.workerViewport.ScrollDown(1)
+			} else if m.viewMode == viewDAG {
+				m.dagViewport.ScrollDown(1)
 			} else {
-				if m.queenScroll > 0 {
-					m.queenScroll--
-				}
+				m.queenViewport.ScrollDown(1)
 			}
-		case "tab":
+		case key.Matches(msg, m.keys.NextView):
 			m.cycleView(1)
-		case "shift+tab":
+			m.syncTaskTable()
+		case key.Matches(msg, m.keys.PrevView):
 			m.cycleView(-1)
-		case "0":
+			m.syncTaskTable()
+		case key.Matches(msg, m.keys.QueenView):
 			m.viewMode = viewQueen
-			m.queenScroll = 0
-		case "d":
+			m.queenViewport.GotoBottom()
+			m.syncTaskTable()
+		case key.Matches(msg, m.keys.ToggleDAG):
 			if m.viewMode == viewDAG {
 				m.viewMode = viewQueen
-				m.queenScroll = 0
+				m.queenViewport.GotoBottom()
 			} else {
 				m.viewMode = viewDAG
+				m.syncDAGViewport(true)
 			}
-		case "right", "l":
+		case key.Matches(msg, m.keys.WorkerRight):
 			if m.viewMode == viewWorker {
 				m.cycleView(1)
 			} else if len(m.workerOrder) > 0 {
 				m.viewMode = viewWorker
 				m.viewWorkerID = m.workerOrder[0]
-				m.workerScroll = 0
+				m.syncWorkerViewport(true)
 			}
-		case "left", "h":
+			m.syncTaskTable()
+		case key.Matches(msg, m.keys.WorkerLeft):
 			if m.viewMode == viewWorker {
 				m.cycleView(-1)
+				m.syncTaskTable()
 			}
+		case key.Matches(msg, m.keys.TaskFocus):
+			m.taskTable.Focus()
+		case key.Matches(msg, m.keys.ToggleHelp):
+			m.help.ShowAll = !m.help.ShowAll
 		default:
 			// Any other key quits after done
 			if m.done {
@@ -221,13 +348,20 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		m.width = msg.Width
 		m.height = msg.Height
+		m.syncInputWidth()
+		m.refreshViewports(false, false)
 
 	case TickMsg:
 		return m, tickCmd()
 
+	case spinner.TickMsg:
+		var cmd tea.Cmd
+		m.spinner, cmd = m.spinner.Update(msg)
+		return m, cmd
+
 	case QueenThinkingMsg:
 		m.addQueenLine(msg.Text, "think")
-		m.queenScroll = 0 // auto-scroll to bottom
+		m.syncQueenViewport(true)
 
 	case ToolCallMsg:
 		line := "→ " + msg.Name
@@ -239,7 +373,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			line += "(" + input + ")"
 		}
 		m.addQueenLine(line, "tool")
-		m.queenScroll = 0
+		m.syncQueenViewport(true)
 
 	case ToolResultMsg:
 		style := "result"
@@ -263,10 +397,11 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 			}
 		}
-		m.queenScroll = 0
+		m.syncQueenViewport(true)
 
 	case TaskUpdateMsg:
 		m.updateTask(msg)
+		m.refreshViewports(false, false)
 
 	case WorkerUpdateMsg:
 		m.updateWorker(msg)
@@ -275,6 +410,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.turn = msg.Turn
 		m.maxTurn = msg.MaxTurn
 		m.addQueenLine("", "info") // blank separator
+		m.syncQueenViewport(true)
 
 	case DoneMsg:
 		m.done = true
@@ -288,6 +424,7 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		m.addQueenLine("", "info")
 		m.addQueenLine("Press any key to exit...", "info")
+		m.syncQueenViewport(true)
 		// Keep ticking so the view stays rendered
 		return m, tickCmd()
 
@@ -307,95 +444,249 @@ func (m Model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Auto-scroll if viewing this worker
 		if m.viewMode == viewWorker && m.viewWorkerID == msg.WorkerID {
-			m.workerScroll = 0
+			m.syncWorkerViewport(true)
 		}
 
 	case LogMsg:
 		m.addQueenLine(msg.Text, "info")
-		m.queenScroll = 0
+		m.syncQueenViewport(true)
 	}
 
 	return m, nil
 }
 
 func (m Model) handleInputKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	switch msg.Type {
-	case tea.KeyCtrlC:
+	switch {
+	case msg.Type == tea.KeyCtrlC:
 		m.quitting = true
 		return m, tea.Quit
-	case tea.KeyEnter:
-		text := strings.TrimSpace(m.inputText)
+	case msg.Type == tea.KeyEnter:
+		text := strings.TrimSpace(m.objectiveInput.Value())
 		if text == "" {
 			return m, nil
 		}
 		m.objective = text
 		m.input = inputRunning
 		m.startTime = time.Now()
+		m.objectiveInput.Blur()
 		// Notify the command layer
 		if m.objectiveCh != nil {
 			m.objectiveCh <- text
 		}
 		return m, nil
-	case tea.KeyBackspace:
-		if m.inputCursor > 0 {
-			m.inputText = m.inputText[:m.inputCursor-1] + m.inputText[m.inputCursor:]
-			m.inputCursor--
-		}
-	case tea.KeyDelete:
-		if m.inputCursor < len(m.inputText) {
-			m.inputText = m.inputText[:m.inputCursor] + m.inputText[m.inputCursor+1:]
-		}
-	case tea.KeyLeft:
-		if m.inputCursor > 0 {
-			m.inputCursor--
-		}
-	case tea.KeyRight:
-		if m.inputCursor < len(m.inputText) {
-			m.inputCursor++
-		}
-	case tea.KeyHome, tea.KeyCtrlA:
-		m.inputCursor = 0
-	case tea.KeyEnd, tea.KeyCtrlE:
-		m.inputCursor = len(m.inputText)
-	case tea.KeyCtrlU:
-		m.inputText = m.inputText[m.inputCursor:]
-		m.inputCursor = 0
-	case tea.KeyCtrlK:
-		m.inputText = m.inputText[:m.inputCursor]
-	case tea.KeyRunes:
-		ch := msg.String()
-		m.inputText = m.inputText[:m.inputCursor] + ch + m.inputText[m.inputCursor:]
-		m.inputCursor += len(ch)
-	case tea.KeySpace:
-		m.inputText = m.inputText[:m.inputCursor] + " " + m.inputText[m.inputCursor:]
-		m.inputCursor++
 	}
-	return m, nil
+
+	var cmd tea.Cmd
+	m.objectiveInput, cmd = m.objectiveInput.Update(msg)
+	return m, cmd
 }
 
-// visibleHeight returns the number of content lines visible in the main panel.
-func (m Model) visibleHeight() int {
-	h := m.height
+func (m Model) normalizedSize() (w, h int) {
+	w = m.width
+	if w < 40 {
+		w = 80
+	}
+	h = m.height
 	if h < 10 {
 		h = 24
 	}
+	return w, h
+}
+
+func (m *Model) syncInputWidth() {
+	w, _ := m.normalizedSize()
+	inputW := w - 16
+	if inputW < 30 {
+		inputW = 30
+	}
+	if inputW > 100 {
+		inputW = 100
+	}
+	// Border + padding in the view consume 2 columns.
+	m.objectiveInput.Width = inputW - 2
+	if m.objectiveInput.Width < 1 {
+		m.objectiveInput.Width = 1
+	}
+}
+
+func (m Model) taskPanelHeight(totalHeight int) int {
 	taskRows := len(m.tasks)
 	if taskRows == 0 {
 		taskRows = 1
 	}
 	taskH := taskRows + 3
-	if taskH > h/3 {
-		taskH = h / 3
+	if taskH > totalHeight/3 {
+		taskH = totalHeight / 3
 	}
-	queenH := h - taskH - 1 - 4 // status bar + borders
-	if queenH < 5 {
-		queenH = 5
+	return taskH
+}
+
+func (m Model) mainPanelSize() (panelWidth, panelHeight int) {
+	w, h := m.normalizedSize()
+	taskH := m.taskPanelHeight(h)
+	statusH := 1
+
+	panelHeight = h - taskH - statusH - 4 // status bar + borders
+	if panelHeight < 5 {
+		panelHeight = 5
 	}
-	visibleH := queenH - 1 // title line
-	if visibleH < 1 {
-		visibleH = 1
+	panelWidth = w - 2 // border eats 2 chars
+	if panelWidth < 1 {
+		panelWidth = 1
 	}
-	return visibleH
+	return panelWidth, panelHeight
+}
+
+func (m Model) taskPanelSize() (panelWidth, panelHeight int) {
+	w, h := m.normalizedSize()
+	panelWidth = w - 2 // border eats 2 chars
+	if panelWidth < 1 {
+		panelWidth = 1
+	}
+	panelHeight = m.taskPanelHeight(h)
+	if panelHeight < 3 {
+		panelHeight = 3
+	}
+	return panelWidth, panelHeight
+}
+
+func (m Model) viewportSize() (contentWidth, contentHeight int) {
+	panelW, panelH := m.mainPanelSize()
+	contentWidth = panelW - 2
+	if contentWidth < 1 {
+		contentWidth = 1
+	}
+	contentHeight = panelH - 1 // title takes one line
+	if contentHeight < 1 {
+		contentHeight = 1
+	}
+	return contentWidth, contentHeight
+}
+
+func (m *Model) syncQueenViewport(gotoBottom bool) {
+	contentW, contentH := m.viewportSize()
+	m.queenViewport.Width = contentW
+	m.queenViewport.Height = contentH
+	m.queenViewport.SetContent(m.renderQueenViewportContent(contentW))
+	if gotoBottom {
+		m.queenViewport.GotoBottom()
+	}
+}
+
+func (m *Model) syncWorkerViewport(gotoBottom bool) {
+	contentW, contentH := m.viewportSize()
+	m.workerViewport.Width = contentW
+	m.workerViewport.Height = contentH
+	m.workerViewport.SetContent(m.renderWorkerViewportContent(contentW, m.viewWorkerID))
+	if gotoBottom {
+		m.workerViewport.GotoBottom()
+	}
+}
+
+func (m *Model) syncDAGViewport(gotoTop bool) {
+	contentW, contentH := m.viewportSize()
+	m.dagViewport.Width = contentW
+	m.dagViewport.Height = contentH
+	m.dagViewport.SetContent(m.renderDAGViewportContent(contentW))
+	if gotoTop {
+		m.dagViewport.GotoTop()
+	}
+}
+
+func (m *Model) syncTaskTable() {
+	panelW, panelH := m.taskPanelSize()
+
+	tableW := panelW - 2
+	if tableW < 20 {
+		tableW = 20
+	}
+
+	contentH := panelH - 1
+	if contentH < 3 {
+		contentH = 3
+	}
+
+	statusW := 3
+	workerW := 12
+	titleW := tableW - statusW - workerW - 2
+	if titleW < 12 {
+		titleW = 12
+	}
+
+	m.taskTable.SetColumns([]table.Column{
+		{Title: "S", Width: statusW},
+		{Title: "Task", Width: titleW},
+		{Title: "Worker", Width: workerW},
+	})
+
+	selectedRow := m.taskTable.Cursor()
+	if selectedRow < 0 {
+		selectedRow = 0
+	}
+
+	rows := make([]table.Row, 0, len(m.tasks))
+	for idx, t := range m.tasks {
+		taskTitle := t.Title
+		if taskTitle == "" {
+			taskTitle = t.ID
+		}
+
+		worker := ""
+		if t.WorkerID != "" {
+			wid := t.WorkerID
+			if len(wid) > 12 {
+				wid = "w-" + wid[len(wid)-6:]
+			}
+			worker = wid
+		}
+
+		if !m.taskTable.Focused() && m.viewMode == viewWorker && t.WorkerID == m.viewWorkerID {
+			selectedRow = idx
+		}
+
+		rows = append(rows, table.Row{
+			statusIcon(t.Status),
+			taskTitle,
+			worker,
+		})
+	}
+
+	m.taskTable.SetRows(rows)
+	m.taskTable.SetWidth(tableW)
+	m.taskTable.SetHeight(contentH)
+	if len(rows) == 0 {
+		m.taskTable.SetCursor(0)
+		return
+	}
+	if selectedRow >= len(rows) {
+		selectedRow = len(rows) - 1
+	}
+	m.taskTable.SetCursor(selectedRow)
+}
+
+func (m *Model) openSelectedTaskWorker() {
+	idx := m.taskTable.Cursor()
+	if idx < 0 || idx >= len(m.tasks) {
+		return
+	}
+
+	workerID := m.tasks[idx].WorkerID
+	if workerID == "" {
+		return
+	}
+
+	m.taskTable.Blur()
+	m.viewMode = viewWorker
+	m.viewWorkerID = workerID
+	m.syncWorkerViewport(true)
+	m.syncTaskTable()
+}
+
+func (m *Model) refreshViewports(gotoQueenBottom, gotoWorkerBottom bool) {
+	m.syncQueenViewport(gotoQueenBottom)
+	m.syncWorkerViewport(gotoWorkerBottom)
+	m.syncDAGViewport(false)
+	m.syncTaskTable()
 }
 
 func (m *Model) cycleView(direction int) {
@@ -412,7 +703,7 @@ func (m *Model) cycleView(direction int) {
 		} else {
 			m.viewWorkerID = m.workerOrder[len(m.workerOrder)-1]
 		}
-		m.workerScroll = 0
+		m.syncWorkerViewport(true)
 		return
 	}
 
@@ -429,12 +720,12 @@ func (m *Model) cycleView(direction int) {
 	if next < 0 || next >= len(m.workerOrder) {
 		// Wrap back to queen
 		m.viewMode = viewQueen
-		m.queenScroll = 0
+		m.queenViewport.GotoBottom()
 		return
 	}
 
 	m.viewWorkerID = m.workerOrder[next]
-	m.workerScroll = 0
+	m.syncWorkerViewport(true)
 }
 
 func (m *Model) addQueenLine(text, style string) {
@@ -562,16 +853,4 @@ func formatETA(d time.Duration) string {
 	h := int(d.Hours())
 	min := int(d.Minutes()) % 60
 	return fmt.Sprintf("~%dh%dm remaining", h, min)
-}
-
-// progressBar renders a text progress bar like ██████░░░░ using the given width.
-func progressBar(done, total, width int) string {
-	if total == 0 || width <= 0 {
-		return strings.Repeat("░", width)
-	}
-	filled := width * done / total
-	if filled > width {
-		filled = width
-	}
-	return strings.Repeat("█", filled) + strings.Repeat("░", width-filled)
 }

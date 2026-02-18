@@ -159,6 +159,16 @@ func newApp() *cli.Command {
 				},
 				Action: cmdDAG,
 			},
+			{
+				Name:  "list",
+				Usage: "List tasks from the latest session",
+				Flags: []cli.Flag{
+					&cli.IntFlag{Name: "limit", Aliases: []string{"l"}, Value: 20, Usage: "Maximum items to show"},
+					&cli.StringFlag{Name: "status", Aliases: []string{"s"}, Usage: "Filter by task status"},
+					&cli.StringFlag{Name: "type", Aliases: []string{"t"}, Usage: "Filter by task type"},
+				},
+				Action: cmdList,
+			},
 		},
 		Action: func(ctx context.Context, cmd *cli.Command) error {
 			// Default action: treat remaining args as objective (implicit run)
